@@ -1,0 +1,9 @@
+{
+  "name": "date-planner",
+  "version": "1.0.0",
+  "description": "데이트 계획표 만들어주는 웹사이트",
+  "private": true,
+  "scripts": {
+    "start": "npx --yes serve . -p 3000"
+  }
+}

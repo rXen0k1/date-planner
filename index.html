@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="데이트 계획이 고민인가요? Auvia(오비아)가 전 세계 어디든 당신만을 위한 빛나는 데이트 경로를 무료로 설계해 드립니다." />
+  <meta property="og:title" content="Auvia (오비아) - 세상에서 가장 쉬운 데이트 플래너" />
+  <meta property="og:description" content="귀찮은 데이트 코스 짜기, 이제 오비아에게 맡기세요." />
+  <meta name="google-site-verification" content="s3iFm7aU8U9GH-xR1Xj8FrLO_HSsRHz5fI9AAsley_U" />
+  <meta name="naver-site-verification" content="31bdbed1ed9d005fa97250e24595ccf45ad027bf" />
+  <title>Auvia (오비아) | 5초 만에 짜는 완벽한 데이트 코스</title>
+  <!-- 네이버 지도 API (ncpClientId는 네이버 클라우드 플랫폼에서 발급) -->
+  <link rel="preconnect" href="https://oapi.map.naver.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <a href="#" class="brand" aria-label="Auvia">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-word">Auvia</span>
+      </a>
+      <nav class="nav-tabs" role="tablist">
+        <button type="button" class="nav-tab active" data-tab="course" id="tabCourse" aria-selected="true">코스 뚝딱</button>
+      </nav>
+      <div class="search-wrap">
+        <span class="search-icon" aria-hidden="true">🔍</span>
+        <input type="search" class="search-input" id="searchInput" placeholder="" autocomplete="off" />
+        <button type="button" class="search-btn" id="btnSearch" title="검색" aria-label="검색">검색</button>
+      </div>
+      <div class="topbar-right">
+        <div class="lang-switch" role="group" aria-label="언어 선택">
+          <button type="button" class="lang-btn active" data-lang="ko" id="langKo">한국어</button>
+          <button type="button" class="lang-btn" data-lang="en" id="langEn">English</button>
+        </div>
+        <span class="user-name" id="userName" hidden></span>
+        <button type="button" class="btn btn-ghost pill" id="btnSignUp"></button>
+        <button type="button" class="btn btn-ghost pill" id="btnLogin"></button>
+      </div>
+    </header>
+
+    <main class="main">
+      <!-- 패널: 코스 뚝딱 -->
+      <div class="panel" id="panelCourse" role="tabpanel">
+        <!-- 빠른 코스: 지역+카테고리 한 번에 -->
+        <section class="hero quick-course-hero">
+          <p class="hero-tag" id="heroTag"></p>
+          <h1 class="hero-title"><span id="heroTitleBefore"></span> <span class="gradient-text" id="heroTitleHighlight"></span> <span id="heroTitleAfter"></span></h1>
+          <p class="hero-desc" id="heroDesc"></p>
+          <div class="quick-course-form">
+            <div class="quick-form-group">
+              <div class="quick-field">
+                <label id="labelQuickRegion">지역</label>
+                <div class="chip-group" id="quickRegionGroup">
+                  <label class="chip"><input type="radio" name="quickRegion" value="my" checked /><span id="quickRegionMy">내 위치</span></label>
+                  <label class="chip"><input type="radio" name="quickRegion" value="pick" /><span id="quickRegionPick">지도 찍기</span></label>
+                </div>
+              </div>
+              <div class="quick-field">
+                <label id="labelPriceTier">가격대</label>
+                <div class="chip-group" id="priceTierGroup">
+                  <label class="chip"><input type="radio" name="priceTier" value="cheap" /><span id="priceTierCheap">저렴</span></label>
+                  <label class="chip"><input type="radio" name="priceTier" value="normal" checked /><span id="priceTierNormal">보통</span></label>
+                  <label class="chip"><input type="radio" name="priceTier" value="expensive" /><span id="priceTierExpensive">비쌈</span></label>
+                </div>
+                <p class="hint" id="priceTierHint">저렴=우동·분식 등, 보통=일반 식당, 비쌈=고급 식당 등 추천에 반영돼요 (실제 가격 데이터는 없어서 유형으로만 구분해요)</p>
+              </div>
+            </div>
+            <div class="quick-form-group">
+              <div class="quick-field">
+                <label id="labelMbtiPJ">코스 스타일 (P/J)</label>
+                <div class="chip-group" id="mbtiPJGroup">
+                  <label class="chip"><input type="radio" name="mbtiPJ" value="" checked /><span id="mbtiPJNone">선택 안함</span></label>
+                  <label class="chip"><input type="radio" name="mbtiPJ" value="P" /><span id="mbtiP">P 넉넉한 코스</span></label>
+                  <label class="chip"><input type="radio" name="mbtiPJ" value="J" /><span id="mbtiJ">J 1분 단위</span></label>
+                </div>
+                <p class="hint" id="mbtiHint">P=여유 있는 코스, J=시간 정확히 움직이는 스타일</p>
+              </div>
+              <div class="quick-field">
+                <label id="labelCongestionPreference">인기도</label>
+                <div class="chip-group" id="congestionPreferenceGroup">
+                  <label class="chip"><input type="radio" name="congestionPreference" value="relaxed" /><span id="congestionRelaxedLabel">💎 숨은명소</span></label>
+                  <label class="chip"><input type="radio" name="congestionPreference" value="normal" checked /><span id="congestionNormalLabel">✨ 대중적</span></label>
+                  <label class="chip"><input type="radio" name="congestionPreference" value="busy" /><span id="congestionBusyLabel">🔥 핫플</span></label>
+                </div>
+                <p class="hint" id="congestionPreferenceHint">숨은명소=숨은명소·대중적만, 대중적=전부, 핫플=대중적·핫플만 추천해요</p>
+              </div>
+            </div>
+            <div class="quick-form-group quick-form-group-single">
+              <div class="quick-field quick-field-center" id="quickCourseOrderField">
+                <label id="labelCourseOrder">코스 순서</label>
+                <div class="chip-group" id="quickCourseOrderModeGroup">
+                  <label class="chip"><input type="radio" name="quickCourseOrderMode" value="random" checked /><span id="courseOrderRandomText">랜덤</span></label>
+                  <label class="chip"><input type="radio" name="quickCourseOrderMode" value="custom" /><span id="courseOrderCustomText">직접 순서</span></label>
+                </div>
+                <div class="course-order-selects" id="courseOrderSelectsWrap" hidden>
+                  <div class="course-order-row">
+                    <label for="courseOrder1" id="labelCourseOrder1">1순위</label>
+                    <select id="courseOrder1"><option value="restaurant">식당</option><option value="cafe">카페</option><option value="activity">놀거리</option><option value="park">공원</option></select>
+                  </div>
+                  <div class="course-order-row">
+                    <label for="courseOrder2" id="labelCourseOrder2">2순위</label>
+                    <select id="courseOrder2"><option value="cafe">카페</option><option value="restaurant">식당</option><option value="activity">놀거리</option><option value="park">공원</option></select>
+                  </div>
+                  <div class="course-order-row">
+                    <label for="courseOrder3" id="labelCourseOrder3">3순위</label>
+                    <select id="courseOrder3"><option value="activity">놀거리</option><option value="restaurant">식당</option><option value="cafe">카페</option><option value="park">공원</option><option value="skip">선택 안함</option></select>
+                  </div>
+                  <div class="course-order-row">
+                    <label for="courseOrder4" id="labelCourseOrder4">4순위</label>
+                    <select id="courseOrder4"><option value="park">공원</option><option value="restaurant">식당</option><option value="cafe">카페</option><option value="activity">놀거리</option><option value="skip">선택 안함</option></select>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <button type="button" class="btn btn-outline pill btn-save-preset" id="btnSaveCoursePreset" hidden>
+              <span id="btnSaveCoursePresetText">내 코스 취향 저장하기</span>
+            </button>
+            <div class="load-preset-wrap load-preset-mz" id="loadPresetWrap" hidden>
+              <button type="button" class="btn load-preset-toggle-mz" id="btnLoadPresetToggle" aria-expanded="false" aria-controls="savedPresetList">
+                <span id="btnLoadPresetToggleText" class="load-preset-mz-label">저장한 설정 불러오기</span>
+                <span class="load-preset-arrow" id="loadPresetArrow" aria-hidden="true">▼</span>
+              </button>
+              <div class="saved-preset-list-wrap" hidden>
+                <ul class="saved-preset-list saved-preset-list-mz" id="savedPresetList" role="list" hidden></ul>
+              </div>
+            </div>
+            <button type="button" class="btn btn-main pill cta-btn" id="btnQuickCourse">
+              <span id="btnQuickCourseText">오늘 코스 뚝딱</span>
+              <span class="btn-arrow">→</span>
+            </button>
+          </div>
+        </section>
+
+        <!-- 상세 설정 (접기) -->
+        <section class="advanced-section" id="advancedSection" hidden>
+          <h2 class="section-heading" id="advancedHeading">상세 설정</h2>
+          <section class="bento">
+            <div class="bento-card plans-card">
+              <h2 class="card-title" id="cardPlansTitle"></h2>
+              <div class="plans-area" id="plansArea">
+                <div class="plans-empty" id="plansEmpty">
+                  <span class="empty-emoji">📋</span>
+                  <p id="plansEmptyText"></p>
+                  <p class="plans-empty-hint" id="plansEmptyHint"></p>
+                </div>
+                <div class="plans-list" id="plansList" hidden></div>
+              </div>
+            </div>
+            <div class="bento-card filters-card glass">
+              <h2 class="card-title" id="cardSettingsTitle"></h2>
+              <div class="filters-grid">
+                <div class="field-group">
+                  <label id="labelTransport">이동 수단</label>
+                  <div class="chip-group">
+                    <label class="chip"><input type="radio" name="transport" value="walk" checked /><span id="transportWalk">도보</span></label>
+                    <label class="chip"><input type="radio" name="transport" value="transit" /><span id="transportTransit">대중교통</span></label>
+                    <label class="chip" id="transportCarChip"><input type="radio" name="transport" value="car" id="transportCarRadio" /><span id="transportCar">자차</span></label>
+                  </div>
+                  <div class="transport-option toggle-group">
+                    <label class="toggle-label">
+                      <input type="checkbox" id="hasCar" checked />
+                      <span class="toggle-slider"></span>
+                      <span id="labelHasCar">자차 보유</span>
+                    </label>
+                    <p class="hint" id="hasCarHint">끄면 도보·대중교통만 사용해요</p>
+                  </div>
+                </div>
+                <div class="field-group">
+                  <label for="radius" id="labelRadius"></label>
+                  <select id="radius">
+                    <option value="500">500m</option>
+                    <option value="1000" selected>1km</option>
+                    <option value="2000">2km</option>
+                    <option value="3000">3km</option>
+                    <option value="5000">5km</option>
+                    <option value="custom" id="radiusOptionCustom">사용자 설정</option>
+                  </select>
+                </div>
+                <div class="field-group radius-custom-wrap" id="radiusCustomWrap" hidden>
+                  <label for="radiusCustom" id="labelRadiusCustom">직접 입력 (km)</label>
+                  <input type="number" id="radiusCustom" min="0.1" max="50" step="0.1" placeholder="예: 2.5" />
+                  <p class="hint" id="radiusCustomHint">0.1 ~ 50 km 사이로 입력해 주세요</p>
+                </div>
+                <div class="field-group">
+                  <label id="labelTimeRange"></label>
+                  <div class="time-row">
+                    <input type="time" id="startTime" value="12:00" />
+                    <span>~</span>
+                    <input type="time" id="endTime" value="18:00" />
+                  </div>
+                  <p class="hint" id="timeShortageHint"></p>
+                </div>
+                <div class="field-group budget-field-group">
+                  <label for="budgetInput" id="labelBudget">인당 예산 (원)</label>
+                  <input type="number" id="budgetInput" class="budget-input" min="0" step="1000" placeholder="예: 50000 (비우면 무시)" />
+                  <p class="hint" id="budgetHint">입력한 금액에 맞춰 식당·카페·놀거리 예상 비용으로 코스를 짜요</p>
+                </div>
+                <button type="button" class="btn btn-outline pill full" id="btnMyLocation"></button>
+                <button type="button" class="btn btn-main pill full" id="btnGenerate">
+                  <span id="btnGenerateText"></span>
+                  <span class="btn-arrow">→</span>
+                </button>
+              </div>
+            </div>
+            <div class="bento-card weather-card glass" id="weatherCardWrap">
+              <h2 class="card-title" id="weatherCardTitle">날씨</h2>
+              <p class="weather-card-prompt" id="weatherCardPrompt">일정 계획 날을 선택하세요.</p>
+              <p class="weather-card-sub" id="weatherCardSub"></p>
+              <div class="weather-card-days" id="weatherCardDays"></div>
+              <p class="weather-card-summary" id="weatherCardSummary" role="status"></p>
+            </div>
+            <div class="bento-card map-card glass">
+              <div id="map"></div>
+              <p class="map-hint" id="mapHint"></p>
+            </div>
+          </section>
+        </section>
+
+        <!-- 결과: 오늘의 플랜 -->
+        <section class="result-section" id="resultSection" hidden>
+          <div class="result-header">
+            <span class="result-badge" id="resultBadge"></span>
+            <h2 id="resultTitle"></h2>
+            <div class="result-meta" id="resultMeta"></div>
+            <span class="result-mbti-badge" id="resultMbtiBadge" hidden></span>
+            <p class="result-time-notice" id="resultTimeNotice" role="status" hidden></p>
+            <p class="result-budget" id="resultBudget" role="status" hidden></p>
+            <p class="result-budget-disclaimer" id="resultBudgetDisclaimer" role="status" hidden></p>
+          </div>
+          <div class="result-actions">
+            <button type="button" class="btn btn-outline pill" id="btnKakaoShare">
+              <span id="btnKakaoShareText">카톡 공유</span>
+            </button>
+            <button type="button" class="btn btn-outline pill" id="btnCardShare">
+              <span id="btnCardShareText">카드로 공유</span>
+            </button>
+            <button type="button" class="btn btn-outline pill" id="btnOptimizeRoute">
+              <span id="btnOptimizeRouteText">동선 최적화</span>
+            </button>
+          </div>
+          <p class="result-place-disclaimer" id="resultPlaceDisclaimer" role="status" hidden></p>
+          <ol class="itinerary" id="itinerary"></ol>
+          <button type="button" class="btn btn-outline pill" id="btnReset"></button>
+        </section>
+      </div>
+    </main>
+
+    <div class="loading" id="loading" aria-hidden="true">
+      <div class="spinner"></div>
+      <p id="loadingText"></p>
+    </div>
+  </div>
+
+  <!-- 로그인 모달 (이메일/비밀번호) -->
+  <div class="login-modal" id="loginModal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="loginModalTitle">
+    <div class="login-modal-backdrop" id="loginModalBackdrop"></div>
+    <div class="login-modal-card">
+      <div class="login-modal-emoji" aria-hidden="true">👋</div>
+      <h2 class="login-modal-title" id="loginModalTitle"></h2>
+      <p class="login-modal-desc" id="loginModalDesc"></p>
+      <input type="email" class="login-modal-input" id="loginModalEmail" placeholder="" autocomplete="email" />
+      <input type="password" class="login-modal-input" id="loginModalPassword" placeholder="" autocomplete="current-password" />
+      <p class="login-modal-error" id="loginModalError" aria-live="polite"></p>
+      <button type="button" class="btn btn-main pill login-modal-btn" id="loginModalSubmit"></button>
+      <button type="button" class="login-modal-link" id="loginModalToSignup"></button>
+    </div>
+  </div>
+
+  <!-- 회원가입 모달 -->
+  <div class="login-modal" id="signupModal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="signupModalTitle">
+    <div class="login-modal-backdrop" id="signupModalBackdrop"></div>
+    <div class="login-modal-card">
+      <div class="login-modal-emoji" aria-hidden="true">✨</div>
+      <h2 class="login-modal-title" id="signupModalTitle"></h2>
+      <p class="login-modal-desc" id="signupModalDesc"></p>
+      <input type="email" class="login-modal-input" id="signupModalEmail" placeholder="" autocomplete="email" />
+      <input type="password" class="login-modal-input" id="signupModalPassword" placeholder="" autocomplete="new-password" />
+      <input type="text" class="login-modal-input" id="signupModalName" placeholder="" maxlength="30" autocomplete="name" />
+      <p class="login-modal-error" id="signupModalError" aria-live="polite"></p>
+      <button type="button" class="btn btn-main pill login-modal-btn" id="signupModalSubmit"></button>
+      <button type="button" class="login-modal-link" id="signupModalToLogin"></button>
+    </div>
+  </div>
+
+  <!-- 코스 취향 저장 선택 모달 -->
+  <div class="login-modal" id="savePresetModal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="savePresetModalTitle">
+    <div class="login-modal-backdrop" id="savePresetModalBackdrop"></div>
+    <div class="login-modal-card">
+      <div class="login-modal-emoji" aria-hidden="true">💾</div>
+      <h2 class="login-modal-title" id="savePresetModalTitle"></h2>
+      <div id="savePresetChoiceWrap">
+        <button type="button" class="btn btn-main pill login-modal-btn save-preset-option-btn" id="btnSaveCurrentPreset"></button>
+        <button type="button" class="btn btn-outline pill login-modal-btn save-preset-option-btn" id="btnSaveCustomPreset"></button>
+      </div>
+      <div id="saveCurrentOptionsWrap" hidden>
+        <p class="login-modal-desc" id="saveCurrentSelectTitle"></p>
+        <div class="save-preset-options-list" id="saveCurrentOptionsList"></div>
+        <div class="save-preset-custom-actions">
+          <button type="button" class="btn btn-main pill" id="btnSaveCurrentConfirm"></button>
+          <button type="button" class="btn btn-ghost pill login-modal-link" id="btnSaveCurrentBack"></button>
+        </div>
+      </div>
+      <div id="savePresetCustomWrap" hidden>
+        <div class="custom-preset-mz-header">
+          <span class="custom-preset-mz-emoji" aria-hidden="true">✨</span>
+          <p class="login-modal-desc custom-preset-mz-desc" id="customPresetDesc"></p>
+        </div>
+        <input type="text" class="login-modal-input custom-preset-mz-input" id="savePresetCustomName" placeholder="" maxlength="30" />
+        <div class="custom-preset-form" id="customPresetForm">
+          <div class="custom-preset-field" data-preset-key="region">
+            <div class="custom-preset-field-header">
+              <label id="customPresetLabelRegion" class="custom-preset-field-label"></label>
+              <label class="custom-preset-toggle"><input type="checkbox" id="customPresetIncludeRegion" checked /><span class="custom-preset-toggle-slider"></span></label>
+            </div>
+            <div class="custom-preset-field-content">
+            <div class="chip-group">
+              <label class="chip"><input type="radio" name="customPresetRegion" value="my" checked /><span id="customPresetRegionMy"></span></label>
+              <label class="chip"><input type="radio" name="customPresetRegion" value="pick" /><span id="customPresetRegionPick"></span></label>
+            </div>
+            <p class="custom-preset-pick-hint" id="customPresetPickCoords" hidden></p>
+            <button type="button" class="btn btn-outline pill btn-sm" id="btnOpenCustomPresetMap" hidden><span id="btnOpenCustomPresetMapText">지도에서 위치 선택</span></button>
+            </div>
+          </div>
+          <div class="custom-preset-field" data-preset-key="priceTier">
+            <div class="custom-preset-field-header">
+              <label id="customPresetLabelPriceTier" class="custom-preset-field-label"></label>
+              <label class="custom-preset-toggle"><input type="checkbox" id="customPresetIncludePriceTier" checked /><span class="custom-preset-toggle-slider"></span></label>
+            </div>
+            <div class="custom-preset-field-content">
+            <select id="customPresetPriceTier">
+              <option value="">선택</option>
+              <option value="cheap">저렴</option>
+              <option value="normal">보통</option>
+              <option value="expensive">비쌈</option>
+            </select>
+            </div>
+          </div>
+          <div class="custom-preset-field" data-preset-key="courseStyle">
+            <div class="custom-preset-field-header">
+              <label id="customPresetLabelCourseStyle" class="custom-preset-field-label"></label>
+              <label class="custom-preset-toggle"><input type="checkbox" id="customPresetIncludeCourseStyle" checked /><span class="custom-preset-toggle-slider"></span></label>
+            </div>
+            <div class="custom-preset-field-content">
+            <select id="customPresetMbtiPJ">
+              <option value="">선택</option>
+              <option value="P">P 넉넉한</option>
+              <option value="J">J 1분 단위</option>
+            </select>
+            </div>
+          </div>
+          <div class="custom-preset-field" data-preset-key="congestion">
+            <div class="custom-preset-field-header">
+              <label id="customPresetLabelCongestion" class="custom-preset-field-label"></label>
+              <label class="custom-preset-toggle"><input type="checkbox" id="customPresetIncludeCongestion" checked /><span class="custom-preset-toggle-slider"></span></label>
+            </div>
+            <div class="custom-preset-field-content">
+            <select id="customPresetCongestion">
+              <option value="relaxed">숨은명소</option>
+              <option value="normal">대중적</option>
+              <option value="busy">핫플</option>
+            </select>
+            </div>
+          </div>
+          <div class="custom-preset-field" data-preset-key="courseOrder">
+            <div class="custom-preset-field-header">
+              <label id="customPresetLabelCourseOrder" class="custom-preset-field-label"></label>
+              <label class="custom-preset-toggle"><input type="checkbox" id="customPresetIncludeCourseOrder" checked /><span class="custom-preset-toggle-slider"></span></label>
+            </div>
+            <div class="custom-preset-field-content">
+            <select id="customPresetOrderMode">
+              <option value="random">랜덤</option>
+              <option value="custom">직접 순서</option>
+            </select>
+            <div class="course-order-selects course-order-slots" id="customPresetOrderWrap" hidden>
+              <div class="course-order-slot">
+                <span class="course-order-slot-badge" aria-hidden="true">1</span>
+                <select id="customPresetOrder1"><option value="restaurant">식당</option><option value="cafe">카페</option><option value="activity">놀거리</option><option value="park">공원</option></select>
+              </div>
+              <div class="course-order-slot">
+                <span class="course-order-slot-badge" aria-hidden="true">2</span>
+                <select id="customPresetOrder2"><option value="cafe">카페</option><option value="restaurant">식당</option><option value="activity">놀거리</option><option value="park">공원</option></select>
+              </div>
+              <div class="course-order-slot">
+                <span class="course-order-slot-badge" aria-hidden="true">3</span>
+                <select id="customPresetOrder3"><option value="activity">놀거리</option><option value="restaurant">식당</option><option value="cafe">카페</option><option value="park">공원</option><option value="skip">선택 안함</option></select>
+              </div>
+              <div class="course-order-slot">
+                <span class="course-order-slot-badge" aria-hidden="true">4</span>
+                <select id="customPresetOrder4"><option value="park">공원</option><option value="restaurant">식당</option><option value="cafe">카페</option><option value="activity">놀거리</option><option value="skip">선택 안함</option></select>
+              </div>
+            </div>
+            </div>
+          </div>
+          <div class="custom-preset-field" data-preset-key="transport">
+            <div class="custom-preset-field-header">
+              <label id="customPresetLabelTransport" class="custom-preset-field-label"></label>
+              <label class="custom-preset-toggle"><input type="checkbox" id="customPresetIncludeTransport" checked /><span class="custom-preset-toggle-slider"></span></label>
+            </div>
+            <div class="custom-preset-field-content">
+            <select id="customPresetTransport">
+              <option value="walk">도보</option>
+              <option value="transit">대중교통</option>
+              <option value="car">자차</option>
+            </select>
+            <label class="custom-preset-check"><input type="checkbox" id="customPresetHasCar" /> <span id="customPresetHasCarLabel"></span></label>
+            </div>
+          </div>
+          <div class="custom-preset-field" data-preset-key="radius">
+            <div class="custom-preset-field-header">
+              <label id="customPresetLabelRadius" class="custom-preset-field-label"></label>
+              <label class="custom-preset-toggle"><input type="checkbox" id="customPresetIncludeRadius" checked /><span class="custom-preset-toggle-slider"></span></label>
+            </div>
+            <div class="custom-preset-field-content">
+            <select id="customPresetRadius">
+              <option value="500">500m</option>
+              <option value="1000" selected>1km</option>
+              <option value="2000">2km</option>
+              <option value="3000">3km</option>
+              <option value="5000">5km</option>
+              <option value="custom">사용자 설정</option>
+            </select>
+            <input type="number" id="customPresetRadiusCustom" min="0.1" max="50" step="0.1" placeholder="km" class="custom-preset-input-inline" style="display:none;" />
+            </div>
+          </div>
+          <div class="custom-preset-field" data-preset-key="timeRange">
+            <div class="custom-preset-field-header">
+              <label id="customPresetLabelTimeRange" class="custom-preset-field-label"></label>
+              <label class="custom-preset-toggle"><input type="checkbox" id="customPresetIncludeTimeRange" checked /><span class="custom-preset-toggle-slider"></span></label>
+            </div>
+            <div class="custom-preset-field-content">
+            <div class="time-row">
+              <input type="time" id="customPresetStartTime" value="12:00" />
+              <span>~</span>
+              <input type="time" id="customPresetEndTime" value="18:00" />
+            </div>
+            </div>
+          </div>
+        </div>
+        <p class="login-modal-error" id="savePresetCustomError" aria-live="polite"></p>
+        <div class="save-preset-custom-actions">
+          <button type="button" class="btn btn-main pill" id="btnSaveCustomPresetSubmit"></button>
+          <button type="button" class="btn btn-ghost pill login-modal-link" id="btnSavePresetBack"></button>
+        </div>
+      </div>
+      <button type="button" class="btn btn-ghost pill login-modal-link" id="btnSavePresetClose"></button>
+    </div>
+  </div>
+
+  <!-- 커스텀 설정: 위치 선택 지도 모달 -->
+  <div class="login-modal" id="customPresetMapModal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="customPresetMapModalTitle">
+    <div class="login-modal-backdrop" id="customPresetMapModalBackdrop"></div>
+    <div class="login-modal-card custom-preset-map-card">
+      <h2 class="login-modal-title" id="customPresetMapModalTitle"></h2>
+      <div class="custom-preset-map-search">
+        <input type="text" class="login-modal-input" id="customPresetMapSearchInput" placeholder="" autocomplete="off" />
+        <button type="button" class="btn btn-main pill" id="btnCustomPresetMapSearch"></button>
+      </div>
+      <div id="customPresetMapContainer" class="custom-preset-map-container"></div>
+      <p class="custom-preset-pick-hint" id="customPresetMapHint"></p>
+      <div class="save-preset-custom-actions">
+        <button type="button" class="btn btn-main pill" id="btnCustomPresetMapConfirm"></button>
+        <button type="button" class="btn btn-ghost pill login-modal-link" id="btnCustomPresetMapCancel"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 카드 뉴스형 공유 모달 -->
+  <div class="card-share-modal" id="cardShareModal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="cardShareModalTitle">
+    <div class="card-share-backdrop" id="cardShareBackdrop"></div>
+    <div class="card-share-card" id="cardShareCard">
+      <h2 class="card-share-title" id="cardShareModalTitle">오늘 우리의 데이트 기록</h2>
+      <div class="card-share-list" id="cardShareList"></div>
+      <p class="card-share-hint" id="cardShareHint">아래 버튼으로 텍스트를 복사한 뒤 카톡에 붙여넣기 하거나, 이 화면을 캡처해서 공유해 보세요.</p>
+      <div class="card-share-actions">
+        <button type="button" class="btn btn-main pill" id="btnCopyCardText">
+          <span id="btnCopyCardTextLabel">텍스트 복사</span>
+        </button>
+        <button type="button" class="btn btn-outline pill" id="btnCloseCardShare">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.NAVER_MAP_CLIENT_ID = ''; // 네이버 지도 사용 시: 네이버 클라우드 플랫폼에서 발급한 클라이언트 ID 입력
+    window.MAPTILER_API_KEY = 'GJR4aNdJDutvATwCoTwP'; // 지도 라벨 언어 고정(한/영)을 원할 때: MapTiler Cloud에서 무료 API 키 발급 후 입력
+    // 네이버 검색 키는 Netlify Functions 환경 변수에서만 사용합니다.
+    window.NAVER_SEARCH_CLIENT_ID = '';
+    window.NAVER_SEARCH_CLIENT_SECRET = '';
+    // Supabase Auth (회원가입/로그인): https://supabase.com 에서 프로젝트 생성 후 URL과 anon key 입력
+    window.SUPABASE_URL = 'https://lkoegvgkwffpqwoqfkvb.supabase.co';
+    window.SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxrb2Vndmdrd2ZmcHF3b3Fma3ZiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIzNDU1NDksImV4cCI6MjA4NzkyMTU0OX0.6bHCHGIs0Gwgv4RffyBkjBAdOg92FZKbw2KDRehoDMg';
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <script src="app.js"></script>
+  <script>
+    (function() {
+      var mapLang = localStorage.getItem('date-planner-lang') || 'ko';
+      var mapReadyCalled = false;
+      function callMapReady() {
+        if (mapReadyCalled) return;
+        mapReadyCalled = true;
+        if (window._mapFallbackTimer) {
+          clearTimeout(window._mapFallbackTimer);
+          window._mapFallbackTimer = null;
+        }
+        if (window.onNaverMapReady) window.onNaverMapReady(null);
+      }
+      var fallbackTimer = setTimeout(callMapReady, 8000);
+      window._mapFallbackTimer = fallbackTimer;
+
+      if (window.NAVER_MAP_CLIENT_ID) {
+        var s = document.createElement('script');
+        s.src = 'https://oapi.map.naver.com/openapi/v3/maps.js?ncpClientId=' + window.NAVER_MAP_CLIENT_ID + '&callback=onNaverMapReady&lang=' + mapLang;
+        s.async = true;
+        s.onerror = callMapReady;
+        document.head.appendChild(s);
+      } else {
+        var l = document.createElement('link');
+        l.rel = 'stylesheet';
+        l.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+        document.head.appendChild(l);
+        var s2 = document.createElement('script');
+        s2.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+        s2.onerror = function() { callMapReady(); };
+        s2.onload = function() {
+          if (window.MAPTILER_API_KEY) {
+            var mts = document.createElement('link');
+            mts.rel = 'stylesheet';
+            mts.href = 'https://cdn.maptiler.com/maptiler-sdk-js/v3.0.0/maptiler-sdk.css';
+            document.head.appendChild(mts);
+            var mt = document.createElement('script');
+            mt.src = 'https://cdn.maptiler.com/maptiler-sdk-js/v3.0.0/maptiler-sdk.umd.js';
+            mt.onerror = function() { callMapReady(); };
+            mt.onload = function() {
+              var lt = document.createElement('script');
+              lt.src = 'https://cdn.maptiler.com/leaflet-maptilersdk/v3.0.0/leaflet-maptilersdk.js';
+              lt.onerror = function() { callMapReady(); };
+              lt.onload = function() {
+                clearTimeout(fallbackTimer);
+                callMapReady();
+              };
+              document.head.appendChild(lt);
+            };
+            document.head.appendChild(mt);
+          } else {
+            clearTimeout(fallbackTimer);
+            callMapReady();
+          }
+        };
+        document.head.appendChild(s2);
+      }
+    })();
+  </script>
+</body>
+</html>
