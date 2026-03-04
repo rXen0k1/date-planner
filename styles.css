@@ -836,6 +836,18 @@ html[lang="en"] #labelBudget::after {
   .btn-main.cta-btn {
     width: 100%;
   }
+
+  /* 모바일에서 날씨 / 지도 카드는 가로를 꽉 채우도록 확장 */
+  .weather-card,
+  .map-card {
+    margin-left: -1rem;
+    margin-right: -1rem;
+    border-radius: 0;
+  }
+
+  #map {
+    border-radius: 0;
+  }
 }
 
 @media (max-width: 420px) {
@@ -1015,9 +1027,29 @@ html[lang="en"] #labelBudget::after {
 }
 
 .filters-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem 1.5rem;
+}
+
+.filters-grid .field-group-transport {
+  grid-column: 1 / -1;
+}
+
+.filters-grid .budget-field-group {
+  grid-column: 1 / -1;
+}
+
+.filters-grid .btn.full {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 768px) {
+  .filters-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+  }
 }
 
 .field-group label {
