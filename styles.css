@@ -847,6 +847,71 @@ html[lang="en"] #labelBudget::after {
 
   #map {
     border-radius: 0;
+    /* 가로 4 : 세로 3 비율로 배치 */
+    height: auto !important;
+    min-height: 0;
+    aspect-ratio: 4 / 3;
+  }
+  [hidden] #map {
+    height: auto !important;
+    min-height: 0;
+    aspect-ratio: 4 / 3;
+  }
+
+  /* 코스 순서 칸: 가로 기준 가운데 정렬 */
+  #quickCourseOrderField,
+  .quick-field-center {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+  #quickCourseOrderField .chip-group,
+  .quick-field-center .chip-group {
+    justify-content: center;
+  }
+  #quickCourseOrderField .course-order-selects,
+  .quick-field-center .course-order-selects {
+    justify-content: center;
+  }
+
+  /* 상세 설정 칸: 세로 높이 줄이기 */
+  .advanced-section {
+    margin-top: 1rem;
+    padding-top: 1rem;
+  }
+  .advanced-section .bento {
+    gap: 0.65rem;
+    margin-bottom: 1rem;
+  }
+  .advanced-section .bento-card {
+    padding: 0.9rem 1rem;
+  }
+  .advanced-section .section-heading {
+    margin-bottom: 0.65rem;
+  }
+  .advanced-section .plans-area {
+    min-height: 60px;
+  }
+  .advanced-section .filters-grid {
+    gap: 0.65rem;
+  }
+  .advanced-section .card-title {
+    margin-bottom: 0.5rem;
+  }
+
+  /* 날씨 선택: 가로 배치 (한 줄 스크롤) */
+  .weather-card-days {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 0.5rem;
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+    -webkit-overflow-scrolling: touch;
+  }
+  .weather-card-days .weather-day-btn {
+    flex-shrink: 0;
   }
 }
 
