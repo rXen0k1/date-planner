@@ -77,13 +77,13 @@
             </div>
             <div class="quick-form-group">
               <div class="quick-field">
-                <label id="labelMbtiPJ">코스 스타일 (P/J)</label>
+                <label id="labelMbtiPJ">코스 스타일</label>
                 <div class="chip-group" id="mbtiPJGroup">
                   <label class="chip"><input type="radio" name="mbtiPJ" value="" checked /><span id="mbtiPJNone">선택 안함</span></label>
-                  <label class="chip"><input type="radio" name="mbtiPJ" value="P" /><span id="mbtiP">P 넉넉한 코스</span></label>
-                  <label class="chip"><input type="radio" name="mbtiPJ" value="J" /><span id="mbtiJ">J 1분 단위</span></label>
+                  <label class="chip"><input type="radio" name="mbtiPJ" value="P" /><span id="mbtiP">A 여유 있는 코스</span></label>
+                  <label class="chip"><input type="radio" name="mbtiPJ" value="J" /><span id="mbtiJ">B 빠르게 움직이는 코스</span></label>
                 </div>
-                <p class="hint" id="mbtiHint">P=여유 있는 코스, J=시간 정확히 움직이는 스타일</p>
+                <p class="hint" id="mbtiHint">A=여유 있는 코스, B=빠르게 움직이는 코스</p>
               </div>
               <div class="quick-field">
                 <label id="labelCongestionPreference">인기도</label>
@@ -205,6 +205,11 @@
                   <input type="number" id="budgetInput" class="budget-input" min="0" step="1000" placeholder="예: 50000 (비우면 무시)" />
                   <p class="hint" id="budgetHint">입력한 금액에 맞춰 식당·카페·놀거리 예상 비용으로 코스를 짜요</p>
                 </div>
+                <div class="field-group plan-name-field-group">
+                  <label for="planNameInput" id="labelPlanName">계획 이름</label>
+                  <input type="text" id="planNameInput" class="plan-name-input" maxlength="40" placeholder="예: 주말 한강 데이트" autocomplete="off" />
+                  <p class="hint" id="planNameHint">비워 두면 「방금 만든 계획」으로 저장돼요</p>
+                </div>
                 <button type="button" class="btn btn-outline pill full" id="btnMyLocation"></button>
                 <button type="button" class="btn btn-main pill full" id="btnGenerate">
                   <span id="btnGenerateText"></span>
@@ -255,9 +260,23 @@
       </div>
     </main>
 
-    <div class="loading" id="loading" aria-hidden="true">
-      <div class="spinner"></div>
-      <p id="loadingText"></p>
+    <div class="loading" id="loading" aria-hidden="true" role="status" aria-live="polite">
+      <div class="loading-panel">
+        <div class="loading-ring-wrap" aria-hidden="true">
+          <svg class="loading-ring" viewBox="0 0 120 120">
+            <circle class="loading-ring-track" cx="60" cy="60" r="52" />
+            <circle class="loading-ring-progress" id="loadingRingProgress" cx="60" cy="60" r="52" />
+          </svg>
+          <div class="loading-pct">
+            <span id="loadingPercent">0</span><span class="loading-pct-unit">%</span>
+          </div>
+        </div>
+        <p class="loading-title" id="loadingText"></p>
+        <p class="loading-sub" id="loadingSub"></p>
+        <div class="loading-bar" aria-hidden="true">
+          <div class="loading-bar-fill" id="loadingBarFill"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -353,8 +372,8 @@
             <div class="custom-preset-field-content">
             <select id="customPresetMbtiPJ">
               <option value="">선택</option>
-              <option value="P">P 넉넉한</option>
-              <option value="J">J 1분 단위</option>
+              <option value="P">A 여유 있는 코스</option>
+              <option value="J">B 빠르게 움직이는 코스</option>
             </select>
             </div>
           </div>
