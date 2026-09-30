@@ -8,7 +8,7 @@
   ];
   const OSRM_URL = 'https://router.project-osrm.org';
   const WEATHER_URL = 'https://api.open-meteo.com/v1/forecast';
-  const AIR_QUALITY_URL = 'https://air-quality.api.open-meteo.com/v1/air-quality';
+  const AIR_QUALITY_URL = 'https://air-quality-api.open-meteo.com/v1/air-quality';
   /* 혼잡도 외부 API: 네이버 사용 중. 구글 Places API로 바꿀 때는 enrichPlanWithNaverCongestion 대신 enrichPlanWithGoogleCongestion 호출하면 됨 */
   const NAVER_SEARCH_LOCAL_URL = '/.netlify/functions/naver-search';
   const DEFAULT_LAT = 37.5665;
@@ -21,26 +21,56 @@
   var selectedForecastDayIndex = 0;
   var lastForecastLat = DEFAULT_LAT;
   var lastForecastLng = DEFAULT_LNG;
-  /* 예상 비용: 실제 맛집/카페 단가에 맞춰 여유 있게 책정 (너무 적게 나오지 않도록) */
+  /* 예상 비용: 슬롯·세부 유형별 인당 추정 (실메뉴가 아님, 2026년 물가 기준) */
   var ESTIMATED_COST_BY_TIER = {
-    cheap: { restaurant: 14000, cafe: 7000, activity: 12000, park: 0 },
-    normal: { restaurant: 30000, cafe: 13000, activity: 18000, park: 0 },
-    expensive: { restaurant: 55000, cafe: 22000, activity: 35000, park: 0 },
+    cheap: { restaurant: 16000, cafe: 9000, activity: 15000, park: 0 },
+    normal: { restaurant: 35000, cafe: 15000, activity: 28000, park: 0 },
+    expensive: { restaurant: 80000, cafe: 24000, activity: 50000, park: 0 },
   };
+  /* typeKey별 배수: 같은 슬롯이라도 분식·술·테마파크 등을 다르게 */
+  var ESTIMATED_COST_TYPE_MULT = {
+    restaurant: 1,
+    fast_food: 0.8,
+    bar: 1.35,
+    cafe: 1,
+    ice_cream: 0.6,
+    museum: 0.7,
+    gallery: 0.55,
+    mall: 0.5,
+    theme_park: 1.8,
+    attraction: 1,
+    park: 0,
+  };
+  /* OSM cuisine 키워드 → 추가 배수 (추정) */
+  var ESTIMATED_COST_CUISINE_MULT = [
+    { re: /fine[_ ]?dining|omakase|sushi|steak|french|italian|wine/i, mult: 1.35 },
+    { re: /bbq|korean_bbq|yakiniku|hotpot|seafood/i, mult: 1.2 },
+    { re: /burger|pizza|noodles|ramen|dumpling|chicken|kebab/i, mult: 0.85 },
+    { re: /bakery|dessert|tea|coffee/i, mult: 0.9 },
+  ];
+  var PLACE_CACHE_STORAGE_KEY = 'auvia-place-cache-v1';
+  var PLACE_CACHE_TTL_MS = 20 * 60 * 1000;
+  var PLACE_CACHE_STALE_MS = 6 * 60 * 60 * 1000;
 
   const LANG_STORAGE = 'date-planner-lang';
   let currentLang = localStorage.getItem(LANG_STORAGE) || 'ko';
 
   const PREF_STORAGE_PREFIX = 'date-planner-prefs-';
+  const PLANS_STORAGE_PREFIX = 'date-planner-plans-';
+  const LOCATION_CONSENT_KEY = 'auvia-location-consent';
   let currentUser = null;       // { id, email } 또는 null (Supabase 로그인 시)
   let currentUserName = null;   // 화면에 표시할 이름(이메일 또는 닉네임)
   var supabaseClient = null;    // Supabase 클라이언트 (한 번만 생성)
+  var supabaseTablesReady = null; // null=미확인, true/false
+  var naverSearchCache = {};
+  var locationConsentPendingCb = null;
 
   const TRANSLATIONS = {
     ko: {
       brand: '데이트 플래너',
       searchPlaceholder: '장소·주소 검색',
       searchBtn: '검색',
+      errSearchNoResult: '검색한 장소를 찾지 못했어요. 이름이나 주소를 조금 더 구체적으로 입력해 주세요.',
       login: '로그인',
       logout: '로그아웃',
       signup: '회원가입',
@@ -60,6 +90,10 @@
       locationHintDefault: "내 위치 쓰려면 아래에서 위치 잡아줘",
       labelRadius: '반경 (선택)',
       labelTimeRange: '시간대 (선택)',
+      timePresetLunch: '점심',
+      timePresetDinner: '저녁',
+      timePresetDay: '하루',
+      timePresetHint: '누르면 아래 시작·종료 시각만 바뀌어요. 직접 고쳐도 되고, 일정은 일정 만들기로 만듭니다.',
       btnMyLocation: '📍 내 위치로 이동',
       mapHintDefault: "내 위치를 사용합니다. '내 위치로 이동'을 눌러 주세요.",
       mapHintPick: '지도에서 원하는 지역을 클릭하면 그 주변으로 일정을 짜요.',
@@ -170,8 +204,17 @@
       mbtiHint: 'A=여유 있는 코스, B=빠르게 움직이는 코스',
       mbtiBadgeP: '여유 있는 코스',
       mbtiBadgeJ: '빠르게 움직이는 코스',
-      btnQuickCourse: '오늘 코스 뚝딱',
-      showAdvanced: '상세 설정으로 만들기',
+      btnQuickCourse: '상세 설정',
+      showAdvanced: '상세 설정',
+      btnRegenerate: '다시 짜기',
+      placePin: '고정',
+      placeUnpin: '고정 해제',
+      placeUndo: '되돌리기',
+      recentRegionsLabel: '최근 지역',
+      recentPickedHere: '찍은 곳',
+      regenKeptPins: '고정한 장소는 두고 나머지를 다시 골랐어요.',
+      errRegenNoCenter: '다시 짤 위치 정보가 없어요. 상세 설정에서 한 번 만들어 주세요.',
+      errPinsNeedPools: '이 계획표에는 후보 목록이 없어 고정한 채로 나머지만 바꿀 수 없어요. 고정을 끄고 다시 짜 주세요.',
       labelTransport: '이동 수단 (선택)',
       transportWalk: '도보',
       transportCar: '자차',
@@ -221,6 +264,7 @@
       presetLoaded: '설정을 불러왔어요.',
       presetEdit: '수정',
       presetDelete: '삭제',
+      presetFavorite: '즐겨찾기',
       presetDeleted: '설정을 삭제했어요.',
       presetUpdated: '설정을 수정했어요.',
       confirmDeletePreset: '이 설정을 삭제할까요?',
@@ -247,7 +291,7 @@
       radiusCustomHint: '0.1 ~ 50 km 사이로 입력해 주세요',
       radiusOptionCustom: '사용자 설정',
       errRadiusCustom: '사용자 설정을 선택했으면 거리(km)를 입력해 주세요. (0.1 ~ 50)',
-      errNoLocationPick: '지도 찍기를 선택했어요. 아래 지도에서 위치를 클릭한 뒤 다시 오늘 코스 뚝딱을 눌러 주세요.',
+      errNoLocationPick: '지도 찍기를 선택했어요. 아래 지도에서 위치를 클릭한 뒤 다시 일정 만들기를 눌러 주세요.',
       timeShortageExcluded: '시간이 부족해',
       timeShortageExcludedSuffix: '일정을 제외했어요.',
       substitutionNotice: '반경 안에 원하시는 장소 유형이 없어 다른 유형으로 대체했어요.',
@@ -289,22 +333,79 @@
       kakaoCopied: '복사됐어요! 카톡에 붙여넣기 하세요.',
       btnCardShare: '카드로 공유',
       cardShareTitle: '오늘 우리의 %s 데이트 기록',
-      cardShareHint: '아래 버튼으로 텍스트를 복사한 뒤 카톡에 붙여넣기 하거나, 이 화면을 캡처해서 공유해 보세요.',
+      cardShareTitleDefault: '오늘 우리의 데이트 기록',
+      cardShareTitleHint: '눌러서 제목을 수정할 수 있어요 · 최대 18자',
+      cardShareHint: '이미지를 저장해 카톡·인스타에 보내거나, 텍스트를 복사해 붙여넣기 하세요.',
       btnCopyCardText: '텍스트 복사',
       cardShareClose: '닫기',
       cardCopied: '카드 텍스트가 복사됐어요! 카톡에 붙여넣기 하세요.',
       budgetExceeded: '예산이 부족해 일부 코스를 제외했어요.',
-      budgetDisclaimer: '예상 비용은 실제와 다를 수 있어요. 여유 있게 준비해 주세요.',
+      budgetDisclaimer: '예상 비용은 장소 유형·가격대·OSM 태그로 추정한 값이라 실제 메뉴가와 다를 수 있어요. 여유 있게 준비해 주세요.',
+      placeEstCost: '예상 약 %s원',
       placeDataDisclaimer: '장소 정보는 OpenStreetMap 기준이라 폐업·이전된 곳이 있을 수 있어요. 방문 전 아래에서 지도로 한 번 확인해 주세요.',
-      placeVerifyMap: '지도에서 확인',
+      placeVerifyMap: '지도',
+      placeReserveLink: '예약',
+      placeMenuLink: '메뉴',
       placeReplaceBtn: '다른 곳으로',
+      placeSlotLabel: '이 칸 종류',
+      btnDownloadCardImage: '이미지 저장',
+      cardImageSaved: '카드 이미지를 저장했어요. QR을 찍으면 계획표를 볼 수 있어요.',
+      btnCopySharePlanLink: '링크 복사',
+      sharePlanLinkCopied: '계획표 링크가 복사됐어요. 보내면 상대도 같은 일정을 볼 수 있어요.',
+      sharePlanLoaded: '공유된 계획표를 불러왔어요.',
+      sharePlanLoadFailed: '공유 링크를 열지 못했어요. 링크가 잘못됐거나 너무 길 수 있어요.',
+      btnDownloadIcs: '캘린더 추가',
+      icsDownloaded: '캘린더 파일(.ics)을 저장했어요. 파일을 열어 일정을 추가하세요.',
+      cardShareHint: '이미지를 저장하면 QR이 포함돼요. 찍거나 링크를 열면 계획표가 보여요.',
+      btnToggleDetails: '지도·날씨·상세 설정',
+      btnMobileDockResult: '내 계획표',
       placeHighlightLabel: '인생샷·분위기·데이트 추천',
       errNoOtherPlace: '주변에 같은 유형의 다른 장소가 없어요.',
+      legalTerms: '이용약관',
+      legalPrivacy: '개인정보처리방침',
+      footerOsmNote: '지도·장소: OpenStreetMap',
+      signupAgreeLegal: '이용약관 및 개인정보처리방침에 동의합니다.',
+      signupNeedLegal: '약관과 개인정보처리방침에 동의해 주세요.',
+      locationConsentTitle: '위치 정보 이용 안내',
+      locationConsentDesc: '“내 위치”로 일정을 만들려면 대략적인 현재 위치가 필요합니다. 위치는 주변 장소 검색·지도·날씨 표시에만 쓰이며, 동의 후에도 브라우저에서 위치 권한을 허용해야 합니다. 거부하면 지도에서 지역을 찍어 이용할 수 있어요.',
+      locationConsentAllow: '동의하고 계속',
+      locationConsentDeny: '지도에서 찍기',
+      travelMinutes: '이전 장소에서 이동 약 %s분',
+      travelOverrunNotice: '이동 시간 때문에 일부 체류 시간을 줄였어요.',
+      weatherIndoorBias: '날씨 때문에 실내 위주로 골랐어요.',
+      reasonClosedHours: '선택한 시간대에 영업 중이지 않은 곳은 제외했어요.',
+      reasonHoursRelaxed: '일부 장소는 영업시간이 비어 있거나 시간대와 안 맞을 수 있어요. 방문 전 확인해 주세요.',
+      whyTitle: '이 코스를 이렇게 짰어요',
+      whyIndoor: '날씨 때문에 실내 위주로 골랐어요',
+      whyTravel: '이동 시간을 일정에 반영했어요 (총 약 %s분)',
+      whyCongestion: '선택하신 인기도에 맞춰 골랐어요',
+      whyBudget: '예산 안에서 코스를 맞췄어요',
+      whyDiversity: '비슷한 장소가 겹치지 않게 분산했어요',
+      whyHours: '영업 가능한 시간대의 장소만 넣었어요',
+      whyHoursRelaxed: '조건을 맞추려 영업시간 필터를 일부 완화했어요',
+      summaryStops: '총 %s곳',
+      summaryTravel: '이동 약 %s분',
+      summaryCost: '예상 %s원',
+      tipVerify: '방문 전 지도·영업시간을 한 번 더 확인해 주세요',
+      placeWhyOpen: '영업시간 맞는 곳',
+      placeWhyNear: '이전 장소와 가까움',
+      placeWhyMatch: '취향·가격대 맞춤',
+      whyRoute: '이동 동선을 짧게 맞춰 순서를 다듬었어요',
+      whyOutdoor: '맑은 날씨에 맞춰 야외 장소를 섞었어요',
+      whyFallback: '조건을 살짝 완화해 대체 코스를 만들었어요',
+      whyStreetSpread: '같은 길·같은 구역에 몰리지 않게 흩었어요',
+      errPlanEmptyHint: '반경을 넓히거나, 시간·인기도·코스 순서를 바꿔 다시 시도해 보세요.',
+      errNoPlacesHint: '다른 지역을 찍거나 반경을 키워 주세요. 지도 데이터가 부족한 구역일 수 있어요.',
+      errPlacesStaleCache: '최신 검색이 어려워 잠시 전 저장해 둔 주변 장소로 코스를 짰어요.',
+      errGenerateHint: '잠시 후 다시 시도하거나, 네트워크 상태를 확인해 주세요.',
+      toastDismiss: '닫기',
+      summaryBudgetFit: '예산 대비 약 %s%',
     },
     en: {
       brand: 'Date Planner',
       searchPlaceholder: 'Search place or address',
       searchBtn: 'Search',
+      errSearchNoResult: 'Could not find that place. Try a more specific name or address.',
       login: 'Log in',
       logout: 'Log out',
       signup: 'Sign up',
@@ -324,6 +425,10 @@
       locationHintDefault: 'Set your location below to use my location.',
       labelRadius: 'Radius (Select)',
       labelTimeRange: 'Time range (Select)',
+      timePresetLunch: 'Lunch',
+      timePresetDinner: 'Dinner',
+      timePresetDay: 'Full day',
+      timePresetHint: 'These only fill the start and end times below. You can edit them, and the plan is created when you tap Create plan.',
       btnMyLocation: '📍 Go to my location',
       mapHintDefault: 'Using my location. Click "Go to my location" below.',
       mapHintPick: 'Click on the map to plan around that area.',
@@ -435,8 +540,17 @@
       mbtiHint: 'A=relaxed course, B=fast-paced course',
       mbtiBadgeP: 'Relaxed course',
       mbtiBadgeJ: 'Fast-paced course',
-      btnQuickCourse: 'Get course',
-      showAdvanced: 'Advanced settings',
+      btnQuickCourse: 'Detailed settings',
+      showAdvanced: 'Detailed settings',
+      btnRegenerate: 'Rebuild',
+      placePin: 'Pin',
+      placeUnpin: 'Unpin',
+      placeUndo: 'Undo',
+      recentRegionsLabel: 'Recent areas',
+      recentPickedHere: 'Pinned spot',
+      regenKeptPins: 'Pinned stops stayed. The rest were picked again.',
+      errRegenNoCenter: 'No location is saved for this plan. Create one from detailed settings first.',
+      errPinsNeedPools: 'This plan has no spare places, so pinned stops can’t be kept while rebuilding. Unpin them and rebuild.',
       labelTransport: 'Transport (Select)',
       transportWalk: 'Walk',
       transportCar: 'Car',
@@ -486,6 +600,7 @@
       presetLoaded: 'Settings loaded.',
       presetEdit: 'Edit',
       presetDelete: 'Delete',
+      presetFavorite: 'Favorite',
       presetDeleted: 'Preset deleted.',
       presetUpdated: 'Preset updated.',
       confirmDeletePreset: 'Delete this preset?',
@@ -512,7 +627,7 @@
       radiusCustomHint: 'Enter between 0.1 and 50 km',
       radiusOptionCustom: 'Custom',
       errRadiusCustom: 'Please enter a distance in km (0.1–50) when using Custom.',
-      errNoLocationPick: 'You chose "Pick on map". Click a location on the map below, then click the button again.',
+      errNoLocationPick: 'You chose "Pick on map". Click a location on the map below, then tap Create plan.',
       timeShortageExcluded: 'Not enough time—excluded',
       timeShortageExcludedSuffix: 'from the schedule.',
       substitutionNotice: 'No places of the requested type within radius; substituted with another type.',
@@ -554,17 +669,73 @@
       kakaoCopied: 'Copied! Paste into KakaoTalk.',
       btnCardShare: 'Share as card',
       cardShareTitle: "Today's %s date record",
-      cardShareHint: 'Copy the text below to paste in KakaoTalk, or take a screenshot of this card to share.',
+      cardShareTitleDefault: 'Our date record',
+      cardShareTitleHint: 'Tap the title to edit · 18 characters max',
+      cardShareHint: 'Save the image for KakaoTalk/Instagram, or copy the text.',
       btnCopyCardText: 'Copy text',
       cardShareClose: 'Close',
       cardCopied: 'Card text copied! Paste into KakaoTalk.',
       budgetExceeded: 'Some items excluded to fit your budget.',
-      budgetDisclaimer: 'Estimates may vary. Please bring enough cash.',
+      budgetDisclaimer: 'Costs are estimates from place type, price tier, and OSM tags—not real menu prices. Bring a buffer.',
+      placeEstCost: 'Est. about ₩%s',
       placeDataDisclaimer: 'Place data is from OpenStreetMap; some places may be closed or moved. Please verify on the map before visiting.',
-      placeVerifyMap: 'Verify on map',
+      placeVerifyMap: 'Map',
+      placeReserveLink: 'Reserve',
+      placeMenuLink: 'Menu',
       placeReplaceBtn: 'Pick another',
+      placeSlotLabel: 'Stop type',
+      btnDownloadCardImage: 'Save image',
+      cardImageSaved: 'Card image saved. Scan the QR to open the plan.',
+      btnCopySharePlanLink: 'Copy link',
+      sharePlanLinkCopied: 'Plan link copied. Anyone with the link can view the itinerary.',
+      sharePlanLoaded: 'Shared plan loaded.',
+      sharePlanLoadFailed: 'Could not open the shared link. It may be invalid or too long.',
+      btnDownloadIcs: 'Add to calendar',
+      icsDownloaded: 'Calendar file (.ics) saved. Open it to add events.',
+      cardShareHint: 'Saved images include a QR code. Scan it or open the link to view the plan.',
+      btnToggleDetails: 'Map, weather & details',
+      btnMobileDockResult: 'My plans',
       placeHighlightLabel: 'Recommended for life shot, mood, date',
       errNoOtherPlace: 'No other place of this type nearby.',
+      legalTerms: 'Terms of Service',
+      legalPrivacy: 'Privacy Policy',
+      footerOsmNote: 'Maps & places: OpenStreetMap',
+      signupAgreeLegal: 'I agree to the Terms of Service and Privacy Policy.',
+      signupNeedLegal: 'Please agree to the Terms and Privacy Policy.',
+      locationConsentTitle: 'Location use',
+      locationConsentDesc: '“My location” needs your approximate position to search nearby places, show the map, and weather. After agreeing here, your browser will also ask for permission. You can deny and pick a spot on the map instead.',
+      locationConsentAllow: 'Agree and continue',
+      locationConsentDeny: 'Pick on map',
+      travelMinutes: 'About %s min from previous stop',
+      travelOverrunNotice: 'Stay times were shortened to fit travel time.',
+      weatherIndoorBias: 'We preferred indoor spots for the weather.',
+      reasonClosedHours: 'Places likely closed during your time window were skipped.',
+      reasonHoursRelaxed: 'Some stops may lack hours or not match your window—please verify before you go.',
+      whyTitle: 'Why this course',
+      whyIndoor: 'We preferred indoor spots for the weather',
+      whyTravel: 'Travel time is built into the schedule (about %s min total)',
+      whyCongestion: 'Matched your popularity preference',
+      whyBudget: 'Fitted the course within your budget',
+      whyDiversity: 'Spread stops so similar places don’t cluster',
+      whyHours: 'Only places likely open in your time window',
+      whyHoursRelaxed: 'Opening-hours filters were relaxed to fill the course',
+      summaryStops: '%s stops',
+      summaryTravel: '~%s min travel',
+      summaryCost: 'Est. ₩%s',
+      tipVerify: 'Please double-check maps and hours before you go',
+      placeWhyOpen: 'Fits opening hours',
+      placeWhyNear: 'Close to previous stop',
+      placeWhyMatch: 'Matches your prefs',
+      whyRoute: 'Stops were ordered to keep travel short',
+      whyOutdoor: 'Mixed in outdoor spots for the fair weather',
+      whyFallback: 'Built an alternate course with relaxed filters',
+      whyStreetSpread: 'Spread stops so they aren’t clustered on one street',
+      errPlanEmptyHint: 'Try a wider radius, or change time / popularity / course order.',
+      errNoPlacesHint: 'Pick another area or widen the radius—map data may be sparse here.',
+      errPlacesStaleCache: 'Live search failed, so we used recently cached nearby places.',
+      errGenerateHint: 'Please try again in a moment, or check your network.',
+      toastDismiss: 'Dismiss',
+      summaryBudgetFit: '~%s% of budget',
     },
   };
 
@@ -603,6 +774,11 @@
     if ($('radiusCustom')) $('radiusCustom').placeholder = t('radiusCustomPlaceholder');
     if ($('radiusCustomHint')) $('radiusCustomHint').textContent = t('radiusCustomHint');
     set('labelTimeRange', t('labelTimeRange'));
+    set('timePresetLunch', t('timePresetLunch'));
+    set('timePresetDinner', t('timePresetDinner'));
+    set('timePresetDay', t('timePresetDay'));
+    if ($('timePresetHint')) $('timePresetHint').textContent = t('timePresetHint');
+    if (typeof syncTimePresetHighlight === 'function') syncTimePresetHighlight();
     if ($('timeShortageHint')) $('timeShortageHint').textContent = t('timeShortageHint');
     set('btnMyLocation', t('btnMyLocation'));
     if (mapHint) mapHint.textContent = t('mapHintDefault');
@@ -626,6 +802,21 @@
     if (signupModalPassword) signupModalPassword.placeholder = t('signupPasswordPlaceholder');
     if (signupModalName) signupModalName.placeholder = t('signupNamePlaceholder');
     set('signupModalSubmit', t('signupSubmit'));
+    set('footerTermsLink', t('legalTerms'));
+    set('footerPrivacyLink', t('legalPrivacy'));
+    set('footerOsmNote', t('footerOsmNote'));
+    set('locationConsentTitle', t('locationConsentTitle'));
+    set('locationConsentDesc', t('locationConsentDesc'));
+    set('btnLocationConsentAllow', t('locationConsentAllow'));
+    set('btnLocationConsentDeny', t('locationConsentDeny'));
+    set('locationConsentPrivacyLink', t('legalPrivacy'));
+    if ($('signupAgreeLegalText')) {
+      $('signupAgreeLegalText').innerHTML =
+        '<a href="./legal/terms.html" target="_blank" rel="noopener">' + escapeHtml(t('legalTerms')) + '</a>' +
+        (currentLang === 'en' ? ' and ' : ' 및 ') +
+        '<a href="./legal/privacy.html" target="_blank" rel="noopener">' + escapeHtml(t('legalPrivacy')) + '</a>' +
+        (currentLang === 'en' ? ' — I agree.' : '에 동의합니다.');
+    }
     if (signupModalToLogin) signupModalToLogin.textContent = t('signupToLoginLink');
     if ($('savePresetModalTitle')) $('savePresetModalTitle').textContent = t('savePresetModalTitle');
     if (btnSaveCurrentPreset) btnSaveCurrentPreset.textContent = t('saveCurrentSetting');
@@ -682,6 +873,8 @@
       if (sel && sel.options) for (var i = 0; i < sel.options.length; i++) { var o = sel.options[i]; if (typeLabels[o.value]) o.textContent = typeLabels[o.value]; }
     });
     set('btnQuickCourseText', t('btnQuickCourse'));
+    set('btnRegenerateText', t('btnRegenerate'));
+    renderRecentRegions();
     set('labelTransport', t('labelTransport'));
     set('transportWalk', t('transportWalk'));
     set('transportCar', t('transportCar'));
@@ -707,12 +900,22 @@
     if ($('labelPlanName')) $('labelPlanName').textContent = t('labelPlanName');
     if ($('planNameInput')) $('planNameInput').placeholder = t('planNamePlaceholder');
     if ($('planNameHint')) $('planNameHint').textContent = t('planNameHint');
-    if ($('btnKakaoShareText')) $('btnKakaoShareText').textContent = t('btnKakaoShare');
     if ($('btnSaveCoursePresetText')) $('btnSaveCoursePresetText').textContent = t('btnSaveCoursePreset');
     if ($('btnCardShareText')) $('btnCardShareText').textContent = t('btnCardShare');
     if (cardShareHint) cardShareHint.textContent = t('cardShareHint');
+    if ($('cardShareTitleHint')) $('cardShareTitleHint').textContent = t('cardShareTitleHint');
     if ($('btnCopyCardTextLabel')) $('btnCopyCardTextLabel').textContent = t('btnCopyCardText');
+    if ($('btnDownloadCardImageLabel')) $('btnDownloadCardImageLabel').textContent = t('btnDownloadCardImage');
+    if ($('btnCopySharePlanLinkLabel')) $('btnCopySharePlanLinkLabel').textContent = t('btnCopySharePlanLink');
+    if ($('btnDownloadIcsText')) $('btnDownloadIcsText').textContent = t('btnDownloadIcs');
     if (btnCloseCardShare) btnCloseCardShare.textContent = t('cardShareClose');
+    if ($('btnToggleDetailsText')) $('btnToggleDetailsText').textContent = t('btnToggleDetails');
+    if ($('btnMobileDockCourseText')) $('btnMobileDockCourseText').textContent = t('btnQuickCourse') || '상세 설정';
+    if ($('btnMobileDockResultText')) $('btnMobileDockResultText').textContent = t('btnMobileDockResult');
+    if ($('mobilePlansTitle')) $('mobilePlansTitle').textContent = t('cardPlansTitle');
+    if ($('btnCloseMobilePlans')) $('btnCloseMobilePlans').textContent = t('cardShareClose');
+    if ($('mobilePlansEmptyText')) $('mobilePlansEmptyText').textContent = t('plansEmptyText');
+    if ($('mobilePlansEmptyHint')) $('mobilePlansEmptyHint').textContent = t('plansEmptyHint');
     set('weatherCardTitle', t('weatherCardTitle'));
     if ($('weatherCardPrompt')) $('weatherCardPrompt').textContent = t('weatherSelectDayPrompt');
     (function () {
@@ -806,6 +1009,7 @@
     signupModalPassword.value = '';
     if (signupModalName) signupModalName.value = '';
     if (signupModalError) signupModalError.textContent = '';
+    if ($('signupAgreeLegal')) $('signupAgreeLegal').checked = false;
     signupModalEmail.placeholder = t('signupEmailPlaceholder');
     signupModalPassword.placeholder = t('signupPasswordPlaceholder');
     if (signupModalName) signupModalName.placeholder = t('signupNamePlaceholder');
@@ -819,6 +1023,11 @@
       var name = signupModalName ? (signupModalName.value || '').trim() : '';
       if (!email || !password) {
         if (signupModalError) signupModalError.textContent = t('errSignup');
+        return;
+      }
+      var agree = $('signupAgreeLegal');
+      if (agree && !agree.checked) {
+        if (signupModalError) signupModalError.textContent = t('signupNeedLegal');
         return;
       }
       if (password.length < 6) {
@@ -880,6 +1089,7 @@
     if (loadPresetWrap) loadPresetWrap.hidden = !loggedIn;
     if (loggedIn) {
       loadUserCoursePreset();
+      loadSavedPlansLocal();
       if (savedPresetList) savedPresetList.hidden = true;
       if (btnLoadPresetToggle) btnLoadPresetToggle.setAttribute('aria-expanded', 'false');
     }
@@ -908,11 +1118,206 @@
     supabaseClient.auth.getSession().then(function (res) {
       setUserFromSession(res.data.session);
       updateAuthUI();
+      if (currentUser) syncUserDataFromCloud();
+    }).catch(function () {
+      updateAuthUI();
     });
     supabaseClient.auth.onAuthStateChange(function (event, session) {
       setUserFromSession(session);
       updateAuthUI();
+      if (session && session.user) syncUserDataFromCloud();
     });
+  }
+
+  function hasLocationConsent() {
+    try { return localStorage.getItem(LOCATION_CONSENT_KEY) === '1'; } catch (e) { return false; }
+  }
+
+  function setLocationConsent(ok) {
+    try {
+      if (ok) localStorage.setItem(LOCATION_CONSENT_KEY, '1');
+      else localStorage.removeItem(LOCATION_CONSENT_KEY);
+    } catch (e) { }
+  }
+
+  function hideLocationConsentBanner() {
+    var banner = $('locationConsentBanner');
+    if (banner) banner.hidden = true;
+    locationConsentPendingCb = null;
+  }
+
+  function requestLocationConsentThen(cb) {
+    if (hasLocationConsent()) {
+      cb();
+      return;
+    }
+    locationConsentPendingCb = cb;
+    var banner = $('locationConsentBanner');
+    if (banner) banner.hidden = false;
+  }
+
+  function bindLocationConsentHandlers() {
+    var allowBtn = $('btnLocationConsentAllow');
+    var denyBtn = $('btnLocationConsentDeny');
+    if (allowBtn) {
+      allowBtn.addEventListener('click', function () {
+        setLocationConsent(true);
+        var cb = locationConsentPendingCb;
+        hideLocationConsentBanner();
+        if (typeof cb === 'function') cb();
+      });
+    }
+    if (denyBtn) {
+      denyBtn.addEventListener('click', function () {
+        hideLocationConsentBanner();
+        var pick = document.querySelector('input[name="quickRegion"][value="pick"]');
+        if (pick) pick.checked = true;
+        if (mapHint) mapHint.textContent = t('mapHintPick');
+        if (advancedSection) {
+          advancedSection.hidden = false;
+          setAdvancedDetailsOpen(true);
+          advancedSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+    }
+  }
+
+  function ensureSupabaseTables() {
+    if (!supabaseClient || !currentUser) return Promise.resolve(false);
+    if (supabaseTablesReady != null) return Promise.resolve(supabaseTablesReady);
+    return supabaseClient.from('user_presets').select('id').limit(1).then(function (res) {
+      supabaseTablesReady = !res.error;
+      return supabaseTablesReady;
+    }).catch(function () {
+      supabaseTablesReady = false;
+      return false;
+    });
+  }
+
+  function getPlansStorageKey() {
+    if (!currentUser || !currentUser.id) return null;
+    return PLANS_STORAGE_PREFIX + currentUser.id;
+  }
+
+  function persistSavedPlansLocal() {
+    var key = getPlansStorageKey();
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify(savedPlans));
+    } catch (e) { }
+  }
+
+  function loadSavedPlansLocal() {
+    var key = getPlansStorageKey();
+    if (!key) return;
+    try {
+      var raw = localStorage.getItem(key);
+      if (!raw) return;
+      var list = JSON.parse(raw);
+      if (Array.isArray(list)) {
+        savedPlans = list;
+        renderSavedPlansList();
+      }
+    } catch (e) { }
+  }
+
+  function renderSavedPlansList() {
+    if (!plansList || !plansEmpty) return;
+    plansList.innerHTML = '';
+    if (!savedPlans.length) {
+      plansList.hidden = true;
+      plansEmpty.hidden = false;
+      renderMobilePlansPanel();
+      return;
+    }
+    plansEmpty.hidden = true;
+    plansList.hidden = false;
+    savedPlans.forEach(function (item) {
+      plansList.appendChild(createPlanCardElement(item));
+    });
+    renderMobilePlansPanel();
+  }
+
+  function upsertPresetCloud(name, kind, payload) {
+    return ensureSupabaseTables().then(function (ok) {
+      if (!ok || !supabaseClient || !currentUser) return;
+      return supabaseClient.from('user_presets').upsert({
+        user_id: currentUser.id,
+        name: name || 'default',
+        kind: kind || 'default',
+        payload: payload || {},
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'user_id,name,kind' });
+    }).catch(function () {});
+  }
+
+  function upsertPlanCloud(item) {
+    return ensureSupabaseTables().then(function (ok) {
+      if (!ok || !supabaseClient || !currentUser || !item) return;
+      return supabaseClient.from('saved_plans').upsert({
+        user_id: currentUser.id,
+        client_id: String(item.id),
+        title: item.title || '',
+        payload: item
+      }, { onConflict: 'user_id,client_id' });
+    }).catch(function () {});
+  }
+
+  function deletePlanCloud(clientId) {
+    return ensureSupabaseTables().then(function (ok) {
+      if (!ok || !supabaseClient || !currentUser) return;
+      return supabaseClient.from('saved_plans').delete().eq('user_id', currentUser.id).eq('client_id', String(clientId));
+    }).catch(function () {});
+  }
+
+  function syncUserDataFromCloud() {
+    if (!currentUser || !supabaseClient) {
+      loadSavedPlansLocal();
+      return;
+    }
+    loadSavedPlansLocal();
+    ensureSupabaseTables().then(function (ok) {
+      if (!ok) return;
+      return Promise.all([
+        supabaseClient.from('user_presets').select('name,kind,payload,updated_at').eq('user_id', currentUser.id),
+        supabaseClient.from('saved_plans').select('client_id,title,payload,created_at').eq('user_id', currentUser.id).order('created_at', { ascending: false })
+      ]).then(function (results) {
+        var presetsRes = results[0];
+        var plansRes = results[1];
+        if (presetsRes && !presetsRes.error && presetsRes.data) {
+          presetsRes.data.forEach(function (row) {
+            try {
+              if (row.kind === 'default') {
+                var key = getCurrentUserPrefsKey();
+                if (key) localStorage.setItem(key, JSON.stringify(row.payload || {}));
+              } else if (row.kind === 'custom' && row.name) {
+                addCustomPresetName(row.name);
+                var ckey = getCurrentUserPrefsKey() + '-custom-' + presetNameToSlug(row.name);
+                localStorage.setItem(ckey, JSON.stringify(row.payload || {}));
+              }
+            } catch (e) { }
+          });
+          loadUserCoursePreset();
+          if (typeof renderSavedPresetList === 'function') {
+            try { renderSavedPresetList(); } catch (e2) { }
+          }
+        }
+        if (plansRes && !plansRes.error && plansRes.data && plansRes.data.length) {
+          var merged = plansRes.data.map(function (row) {
+            var p = row.payload || {};
+            if (!p.id) p.id = row.client_id || Date.now();
+            if (row.title) p.title = row.title;
+            return p;
+          });
+          var byId = {};
+          savedPlans.forEach(function (p) { byId[String(p.id)] = p; });
+          merged.forEach(function (p) { byId[String(p.id)] = p; });
+          savedPlans = Object.keys(byId).map(function (k) { return byId[k]; });
+          persistSavedPlansLocal();
+          renderSavedPlansList();
+        }
+      });
+    }).catch(function () {});
   }
 
   function getCurrentUserPrefsKey() {
@@ -996,9 +1401,23 @@
     if (data.quickRegion !== undefined) {
       var qr = document.querySelector('input[name="quickRegion"][value="' + (data.quickRegion || 'my') + '"]');
       if (qr) qr.checked = true;
-      if (data.searchCenterLat != null && data.searchCenterLng != null && typeof searchCenter !== 'undefined') {
+      if (data.quickRegion === 'pick' && data.searchCenterLat != null && data.searchCenterLng != null) {
         searchCenter = { lat: Number(data.searchCenterLat), lng: Number(data.searchCenterLng) };
-        if (mapAdapter && typeof mapAdapter.setView === 'function') mapAdapter.setView(searchCenter.lat, searchCenter.lng, 15);
+        if (mapHint) mapHint.textContent = t('mapHintPick');
+        fetchFourDayForecast(searchCenter.lat, searchCenter.lng);
+        if (mapAdapter) {
+          if (mapAdapter.setView) mapAdapter.setView(searchCenter.lat, searchCenter.lng, 15);
+          if (mapAdapter.addPickMarker) mapAdapter.addPickMarker(searchCenter.lat, searchCenter.lng, t('pickHerePlan'));
+          refreshMainMapAfterShow();
+          setTimeout(function () {
+            if (!searchCenter || !mapAdapter || !mapAdapter.addPickMarker) return;
+            mapAdapter.setView(searchCenter.lat, searchCenter.lng, 15);
+            mapAdapter.addPickMarker(searchCenter.lat, searchCenter.lng, t('pickHerePlan'));
+          }, 400);
+        }
+      } else if (data.quickRegion === 'my') {
+        if (mapAdapter && mapAdapter.removePickMarker) mapAdapter.removePickMarker();
+        if (mapHint) mapHint.textContent = t('mapHintDefault');
       }
     }
     if (data.priceTier !== undefined) {
@@ -1038,6 +1457,7 @@
     }
     if (data.startTime !== undefined && $('startTime')) $('startTime').value = data.startTime;
     if (data.endTime !== undefined && $('endTime')) $('endTime').value = data.endTime;
+    if (typeof syncTimePresetHighlight === 'function') syncTimePresetHighlight();
   }
 
   function saveCoursePresetToKey(key, selectedOptionIds, dataFromModal) {
@@ -1051,6 +1471,15 @@
     }
     try {
       localStorage.setItem(key, JSON.stringify(data));
+      var base = getCurrentUserPrefsKey();
+      if (base && key === base) {
+        upsertPresetCloud('default', 'default', data);
+      } else if (base && key.indexOf(base + '-custom-') === 0) {
+        var slug = key.replace(base + '-custom-', '');
+        var names = getCustomPresetNames();
+        var name = names.find(function (n) { return presetNameToSlug(n) === slug; }) || slug;
+        upsertPresetCloud(name, 'custom', data);
+      }
       return true;
     } catch (e) {
       return false;
@@ -1093,10 +1522,10 @@
       if (regionEl) {
         data.quickRegion = regionEl.value || 'my';
         if (data.quickRegion === 'pick') {
-          var center = customPresetPickedCenter || (typeof searchCenter !== 'undefined' && searchCenter && typeof searchCenter.lat === 'number' && typeof searchCenter.lng === 'number' ? searchCenter : null);
+          var center = customPresetPickedCenter || (typeof searchCenter !== 'undefined' && searchCenter && typeof searchCenter.lat === 'number' && (typeof searchCenter.lng === 'number' || typeof searchCenter.lon === 'number') ? searchCenter : null);
           if (center) {
             data.searchCenterLat = center.lat;
-            data.searchCenterLng = center.lng;
+            data.searchCenterLng = center.lng != null ? center.lng : center.lon;
           }
         }
       }
@@ -1505,6 +1934,48 @@
     try {
       localStorage.setItem(key, JSON.stringify(list));
     } catch (e) { }
+    var base = getCurrentUserPrefsKey();
+    if (base) renameFavoritePresetKey(base + '-custom-' + presetNameToSlug(oldName), base + '-custom-' + presetNameToSlug(newName));
+  }
+
+  function getFavoritePresetStorageKey() {
+    var base = getCurrentUserPrefsKey();
+    return base ? base + '-favorites' : null;
+  }
+
+  function getFavoritePresetKeys() {
+    var key = getFavoritePresetStorageKey();
+    if (!key) return [];
+    try {
+      var raw = localStorage.getItem(key);
+      var list = raw ? JSON.parse(raw) : [];
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function isFavoritePreset(presetKey) {
+    return getFavoritePresetKeys().indexOf(presetKey) !== -1;
+  }
+
+  function toggleFavoritePreset(presetKey) {
+    var key = getFavoritePresetStorageKey();
+    if (!key || !presetKey) return;
+    var list = getFavoritePresetKeys();
+    var i = list.indexOf(presetKey);
+    if (i === -1) list.unshift(presetKey);
+    else list.splice(i, 1);
+    try { localStorage.setItem(key, JSON.stringify(list)); } catch (e) { }
+  }
+
+  function renameFavoritePresetKey(oldKey, newKey) {
+    if (!oldKey || !newKey || oldKey === newKey) return;
+    var store = getFavoritePresetStorageKey();
+    if (!store || !isFavoritePreset(oldKey)) return;
+    var list = getFavoritePresetKeys().filter(function (k) { return k !== oldKey && k !== newKey; });
+    list.unshift(newKey);
+    try { localStorage.setItem(store, JSON.stringify(list)); } catch (e) { }
   }
 
   function deletePreset(key) {
@@ -1517,6 +1988,11 @@
         var slug = key.replace(baseKey + '-custom-', '');
         var name = list.find(function (n) { return presetNameToSlug(n) === slug; });
         if (name) removeCustomPresetName(name);
+      }
+      var favStore = getFavoritePresetStorageKey();
+      if (favStore) {
+        var favs = getFavoritePresetKeys().filter(function (k) { return k !== key; });
+        localStorage.setItem(favStore, JSON.stringify(favs));
       }
     } catch (e) { }
   }
@@ -1602,42 +2078,31 @@
       return;
     }
     var baseKey = getCurrentUserPrefsKey();
-    if (list.hasDefault) {
-      var defaultLi = document.createElement('li');
-      defaultLi.className = 'saved-preset-item';
-      defaultLi.setAttribute('data-preset-key', baseKey);
-      var defaultLabel = document.createElement('span');
-      defaultLabel.className = 'saved-preset-label';
-      defaultLabel.textContent = t('presetDefault');
-      defaultLi.appendChild(defaultLabel);
-      var defaultActions = document.createElement('span');
-      defaultActions.className = 'saved-preset-actions';
-      var defaultEdit = document.createElement('button');
-      defaultEdit.type = 'button';
-      defaultEdit.className = 'saved-preset-edit btn btn-ghost btn-sm';
-      defaultEdit.textContent = t('presetEdit');
-      var defaultDel = document.createElement('button');
-      defaultDel.type = 'button';
-      defaultDel.className = 'saved-preset-delete btn btn-ghost btn-sm';
-      defaultDel.textContent = t('presetDelete');
-      defaultActions.appendChild(defaultEdit);
-      defaultActions.appendChild(defaultDel);
-      defaultLi.appendChild(defaultActions);
-      savedPresetList.appendChild(defaultLi);
-    }
+    var rows = [];
+    if (list.hasDefault) rows.push({ key: baseKey, name: t('presetDefault'), isDefault: true });
     list.customNames.forEach(function (name) {
-      var slug = presetNameToSlug(name);
-      var customKey = baseKey + '-custom-' + slug;
+      rows.push({ key: baseKey + '-custom-' + presetNameToSlug(name), name: name, isDefault: false });
+    });
+    rows.sort(function (a, b) {
+      var af = isFavoritePreset(a.key) ? 1 : 0;
+      var bf = isFavoritePreset(b.key) ? 1 : 0;
+      return bf - af;
+    });
+    rows.forEach(function (row) {
       var li = document.createElement('li');
-      li.className = 'saved-preset-item';
-      li.setAttribute('data-preset-key', customKey);
-      li.setAttribute('data-preset-name', name);
+      li.className = 'saved-preset-item' + (isFavoritePreset(row.key) ? ' is-favorite' : '');
+      li.setAttribute('data-preset-key', row.key);
+      if (!row.isDefault) li.setAttribute('data-preset-name', row.name);
       var label = document.createElement('span');
       label.className = 'saved-preset-label';
-      label.textContent = name;
+      label.textContent = row.name;
       li.appendChild(label);
       var actions = document.createElement('span');
       actions.className = 'saved-preset-actions';
+      var favBtn = document.createElement('button');
+      favBtn.type = 'button';
+      favBtn.className = 'saved-preset-fav btn btn-ghost btn-sm' + (isFavoritePreset(row.key) ? ' is-on' : '');
+      favBtn.textContent = t('presetFavorite');
       var editBtn = document.createElement('button');
       editBtn.type = 'button';
       editBtn.className = 'saved-preset-edit btn btn-ghost btn-sm';
@@ -1646,6 +2111,7 @@
       delBtn.type = 'button';
       delBtn.className = 'saved-preset-delete btn btn-ghost btn-sm';
       delBtn.textContent = t('presetDelete');
+      actions.appendChild(favBtn);
       actions.appendChild(editBtn);
       actions.appendChild(delBtn);
       li.appendChild(actions);
@@ -2033,21 +2499,24 @@
       if (!isQuickRegionPick()) return;
       mapAdapter.addPickMarker(lat, lng, t('pickHerePlan'));
       searchCenter = { lat: lat, lng: lng };
+      rememberRegion(lat, lng, t('recentPickedHere'));
       fetchFourDayForecast(lat, lng);
     });
 
     btnMyLocation.addEventListener('click', goToMyLocation);
     btnGenerate.addEventListener('click', generatePlan);
     btnReset.addEventListener('click', resetResult);
-    if (btnQuickCourse) btnQuickCourse.addEventListener('click', runQuickCourse);
+    if (btnQuickCourse) btnQuickCourse.addEventListener('click', openDetailedSettings);
+    bindTimePresetChips();
     document.querySelectorAll('input[name="quickCourseOrderMode"]').forEach(function (radio) {
       radio.addEventListener('change', updateCourseOrderSelectsVisibility);
     });
     updateCourseOrderSelectsVisibility();
     var courseOrder4El = $('courseOrder4');
     if (courseOrder4El) courseOrder4El.addEventListener('change', syncCourseOrder3SkipOption);
+    if ($('btnRegenerate')) $('btnRegenerate').addEventListener('click', regenerateSameCourse);
     if (btnOptimizeRoute) btnOptimizeRoute.addEventListener('click', runOptimizeRoute);
-    if ($('btnKakaoShare')) $('btnKakaoShare').addEventListener('click', copyKakaoPlan);
+    if ($('btnDownloadIcs')) $('btnDownloadIcs').addEventListener('click', downloadPlanIcs);
     if ($('btnCardShare')) $('btnCardShare').addEventListener('click', openCardShareModal);
     if (tabCourse) tabCourse.addEventListener('click', function () { switchTab('course'); });
     if (tabShare) tabShare.addEventListener('click', function () { switchTab('share'); });
@@ -2102,7 +2571,11 @@
               lastRenderedPlan.budgetWon != null ? lastRenderedPlan.budgetWon : null,
               lastRenderedPlan.pools || undefined,
               lastRenderedPlan.mbtiPJ || '',
-              lastRenderedPlan.mbtiIE || ''
+              lastRenderedPlan.mbtiIE || '',
+              {
+                whyItems: lastRenderedPlan.whyItems || null,
+                travelTotal: lastRenderedPlan.travelTotal
+              }
             );
           }
         }
@@ -2111,17 +2584,14 @@
   }
 
   function switchTab(tab) {
-    if (tab === 'course') {
-      if (panelCourse) panelCourse.hidden = false;
-      if (panelShare) panelShare.hidden = true;
-      if (tabCourse) { tabCourse.classList.add('active'); tabCourse.setAttribute('aria-selected', 'true'); }
-      if (tabShare) { tabShare.classList.remove('active'); tabShare.setAttribute('aria-selected', 'false'); }
-    } else {
-      if (panelCourse) panelCourse.hidden = true;
-      if (panelShare) panelShare.hidden = false;
-      if (tabCourse) { tabCourse.classList.remove('active'); tabCourse.setAttribute('aria-selected', 'false'); }
-      if (tabShare) { tabShare.classList.add('active'); tabShare.setAttribute('aria-selected', 'true'); }
-      initShareMapOnce();
+    // 함께 짜기 탭 UI는 제거됨 — 코스 탭만 유지
+    if (panelCourse) panelCourse.hidden = false;
+    if (tabCourse) { tabCourse.classList.add('active'); tabCourse.setAttribute('aria-selected', 'true'); }
+    if (panelShare) panelShare.hidden = true;
+    if (tabShare) {
+      tabShare.classList.remove('active');
+      tabShare.setAttribute('aria-selected', 'false');
+      tabShare.hidden = true;
     }
   }
 
@@ -2129,14 +2599,16 @@
     btnMyLocation.addEventListener('click', goToMyLocation);
     btnGenerate.addEventListener('click', generatePlan);
     btnReset.addEventListener('click', resetResult);
-    if (btnQuickCourse) btnQuickCourse.addEventListener('click', runQuickCourse);
+    if (btnQuickCourse) btnQuickCourse.addEventListener('click', openDetailedSettings);
+    bindTimePresetChips();
     document.querySelectorAll('input[name="quickCourseOrderMode"]').forEach(function (radio) {
       radio.addEventListener('change', updateCourseOrderSelectsVisibility);
     });
     updateCourseOrderSelectsVisibility();
     if ($('courseOrder4')) $('courseOrder4').addEventListener('change', syncCourseOrder3SkipOption);
+    if ($('btnRegenerate')) $('btnRegenerate').addEventListener('click', regenerateSameCourse);
     if (btnOptimizeRoute) btnOptimizeRoute.addEventListener('click', runOptimizeRoute);
-    if ($('btnKakaoShare')) $('btnKakaoShare').addEventListener('click', copyKakaoPlan);
+    if ($('btnDownloadIcs')) $('btnDownloadIcs').addEventListener('click', downloadPlanIcs);
     if ($('btnCardShare')) $('btnCardShare').addEventListener('click', openCardShareModal);
     if (tabCourse) tabCourse.addEventListener('click', function () { switchTab('course'); });
     if (tabShare) tabShare.addEventListener('click', function () { switchTab('share'); });
@@ -2186,7 +2658,11 @@
               lastRenderedPlan.budgetWon != null ? lastRenderedPlan.budgetWon : null,
               lastRenderedPlan.pools || undefined,
               lastRenderedPlan.mbtiPJ || '',
-              lastRenderedPlan.mbtiIE || ''
+              lastRenderedPlan.mbtiIE || '',
+              {
+                whyItems: lastRenderedPlan.whyItems || null,
+                travelTotal: lastRenderedPlan.travelTotal
+              }
             );
           }
         }
@@ -2194,9 +2670,49 @@
     });
   }
 
+  function searchPlaceQuery(q, onDone) {
+    var query = String(q || '').trim();
+    if (!query) {
+      if (onDone) onDone(null);
+      return;
+    }
+    fetch('https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(query) + '&format=json&limit=1')
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (!data || !data[0]) {
+          showError(t('errSearchNoResult'));
+          if (onDone) onDone(null);
+          return;
+        }
+        var lat = parseFloat(data[0].lat);
+        var lon = parseFloat(data[0].lon);
+        if (isNaN(lat) || isNaN(lon)) {
+          showError(t('errSearchNoResult'));
+          if (onDone) onDone(null);
+          return;
+        }
+        searchCenter = { lat: lat, lng: lon };
+        var pickRadio = document.querySelector('input[name="quickRegion"][value="pick"]');
+        if (pickRadio) pickRadio.checked = true;
+        if (mapHint) mapHint.textContent = t('mapHintPick');
+        if (mapAdapter) {
+          if (map && typeof map.invalidateSize === 'function') map.invalidateSize();
+          mapAdapter.setView(lat, lon, 15);
+          mapAdapter.addPickMarker(lat, lon, data[0].display_name || query);
+        }
+        rememberRegion(lat, lon, query);
+        fetchFourDayForecast(lat, lon);
+        if (onDone) onDone(searchCenter);
+      })
+      .catch(function () {
+        showError(t('errSearchNoResult'));
+        if (onDone) onDone(null);
+      });
+  }
+
   function runSearch() {
     var q = searchInput && searchInput.value.trim();
-    if (!q || !mapAdapter) return;
+    if (!q) return;
     var wasSectionHidden = advancedSection && advancedSection.hidden;
     if (wasSectionHidden) {
       advancedSection.hidden = false;
@@ -2205,25 +2721,16 @@
       setTimeout(runSearch, 180);
       return;
     }
-    fetch('https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(q) + '&format=json&limit=1')
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        if (!data || !data[0]) return;
-        var lat = parseFloat(data[0].lat);
-        var lon = parseFloat(data[0].lon);
-        searchCenter = { lat: lat, lng: lon };
-        var pickRadio = document.querySelector('input[name="quickRegion"][value="pick"]');
-        if (pickRadio) pickRadio.checked = true;
-        if (mapHint) mapHint.textContent = t('mapHintPick');
-        if (map && typeof map.invalidateSize === 'function') map.invalidateSize();
-        mapAdapter.setView(lat, lon, 15);
-        mapAdapter.addPickMarker(lat, lon, data[0].display_name || q);
-        fetchFourDayForecast(lat, lon);
-      })
-      .catch(function () {});
+    searchPlaceQuery(q);
   }
 
   function goToMyLocation() {
+    requestLocationConsentThen(function () {
+      goToMyLocationAfterConsent();
+    });
+  }
+
+  function goToMyLocationAfterConsent() {
     if (!navigator.geolocation) {
       showError(t('errNoGeolocation'));
       return;
@@ -2319,6 +2826,7 @@
 
   function weatherCodeToTheme(code) {
     var c = code != null ? code : 0;
+    if (c === 45 || c === 48) return 'fog';
     if (c >= 51 && c <= 67) return 'rain';
     if ((c >= 71 && c <= 77) || (c >= 85 && c <= 86)) return 'rain';
     if (c >= 80 && c <= 82) return 'rain';
@@ -2453,7 +2961,9 @@
 
   function getWeatherThemeForPlan() {
     if (fourDayForecast && fourDayForecast[selectedForecastDayIndex]) {
-      return fourDayForecast[selectedForecastDayIndex].theme;
+      var th = fourDayForecast[selectedForecastDayIndex].theme;
+      if (weatherTheme === 'dust' && (th === 'fine' || th === 'cloudy')) return 'dust';
+      return th;
     }
     return weatherTheme;
   }
@@ -2463,14 +2973,88 @@
   }
 
   function showError(msg) {
-    alert(msg);
+    // 복사 완료 등 성공 피드백에도 쓰이므로 기본은 info, 실패 힌트는 error 톤
+    var text = String(msg || '');
+    var kind = (/실패|못했어요|Could not|failed|error|확인한 뒤|try again|네트워크/i.test(text)) ? 'error' : 'info';
+    showToast(text, kind);
+  }
+
+  function showToast(msg, kind) {
+    if (!msg) return;
+    var el = $('appToast');
+    if (!el) {
+      alert(msg);
+      return;
+    }
+    el.textContent = String(msg);
+    el.className = 'app-toast is-visible' + (kind === 'ok' ? ' is-ok' : (kind === 'info' ? ' is-info' : ' is-error'));
+    el.hidden = false;
+    el.setAttribute('aria-hidden', 'false');
+    if (showToast._timer) clearTimeout(showToast._timer);
+    var hold = Math.min(9000, 2800 + String(msg).length * 35);
+    showToast._timer = setTimeout(function () {
+      el.classList.remove('is-visible');
+      el.hidden = true;
+      el.setAttribute('aria-hidden', 'true');
+    }, hold);
   }
 
   var placeSearchCache = {};
-  var PLACE_CACHE_TTL_MS = 5 * 60 * 1000;
+  // PLACE_CACHE_TTL_MS / PLACE_CACHE_STALE_MS defined above
 
   function placeCacheKey(center, radiusMeters) {
-    return center.lat.toFixed(3) + ',' + center.lng.toFixed(3) + ',' + Math.round(radiusMeters);
+    var lng = center.lng != null ? center.lng : center.lon;
+    return Number(center.lat).toFixed(3) + ',' + Number(lng).toFixed(3) + ',' + Math.round(radiusMeters);
+  }
+
+  function readSessionPlaceCache() {
+    try {
+      var raw = sessionStorage.getItem(PLACE_CACHE_STORAGE_KEY);
+      if (!raw) return {};
+      var parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function writeSessionPlaceCache(map) {
+    try {
+      var keys = Object.keys(map);
+      if (keys.length > 24) {
+        keys.sort(function (a, b) { return (map[a].at || 0) - (map[b].at || 0); });
+        keys.slice(0, keys.length - 24).forEach(function (k) { delete map[k]; });
+      }
+      sessionStorage.setItem(PLACE_CACHE_STORAGE_KEY, JSON.stringify(map));
+    } catch (e) { /* quota */ }
+  }
+
+  function getCachedPlaceElements(cacheKey, allowStale) {
+    function usable(entry, staleOk) {
+      if (!entry || !entry.elements || !entry.elements.length) return null;
+      var age = Date.now() - (entry.at || 0);
+      if (age < PLACE_CACHE_TTL_MS) return { elements: entry.elements, stale: false };
+      if (staleOk && age < PLACE_CACHE_STALE_MS) return { elements: entry.elements, stale: true };
+      return null;
+    }
+    var fromMem = usable(placeSearchCache[cacheKey], allowStale);
+    if (fromMem) return fromMem;
+    var disk = readSessionPlaceCache();
+    var fromDisk = usable(disk[cacheKey], allowStale);
+    if (fromDisk) {
+      placeSearchCache[cacheKey] = disk[cacheKey];
+      return fromDisk;
+    }
+    return null;
+  }
+
+  function putCachedPlaceElements(cacheKey, elements) {
+    if (!elements || !elements.length) return;
+    var entry = { at: Date.now(), elements: elements };
+    placeSearchCache[cacheKey] = entry;
+    var disk = readSessionPlaceCache();
+    disk[cacheKey] = entry;
+    writeSessionPlaceCache(disk);
   }
 
   function setLoadingText(key) {
@@ -2553,13 +3137,11 @@
 
   async function overpassQuery(center, radiusMeters) {
     var cacheKey = placeCacheKey(center, radiusMeters);
-    var cached = placeSearchCache[cacheKey];
-    if (cached && (Date.now() - cached.at) < PLACE_CACHE_TTL_MS) {
-      return cached.elements;
-    }
+    var fresh = getCachedPlaceElements(cacheKey, false);
+    if (fresh) return fresh.elements;
 
     var lat = center.lat;
-    var lng = center.lng;
+    var lng = center.lng != null ? center.lng : center.lon;
     var r = Math.min(Math.max(radiusMeters, 100), 8000);
     // nwr + tags만 요청해 응답을 가볍게. 결과 상한으로 서버 부담 감소.
     var query = [
@@ -2588,9 +3170,12 @@
         return res.json();
       }).then(function (json) {
         if (settled) return null;
+        var els = json.elements || [];
+        // 빈 응답은 성공으로 확정하지 않음 (다른 미러가 채울 수 있음)
+        if (!els.length) return null;
         settled = true;
         if (controller) controller.abort();
-        return json.elements || [];
+        return els;
       });
     }
 
@@ -2614,14 +3199,60 @@
 
     var results = await Promise.all(promises);
     for (var i = 0; i < results.length; i++) {
-      if (results[i]) {
-        placeSearchCache[cacheKey] = { at: Date.now(), elements: results[i] };
+      if (results[i] && results[i].length) {
+        putCachedPlaceElements(cacheKey, results[i]);
         setLoadingText('loadingText');
         return results[i];
       }
     }
+    // 네트워크 실패 시 만료된 캐시라도 사용
+    var stale = getCachedPlaceElements(cacheKey, true);
+    if (stale && stale.elements && stale.elements.length) {
+      setLoadingText('loadingText');
+      overpassQuery._usedStaleCache = true;
+      return stale.elements;
+    }
+    // 같은 중심·비슷한 반경의 캐시만 사용
+    var disk = readSessionPlaceCache();
+    var nearKey = null;
+    var nearAt = 0;
+    var latKey = Number(lat).toFixed(3);
+    var lngKey = Number(lng).toFixed(3);
+    Object.keys(disk).forEach(function (k) {
+      var parts = k.split(',');
+      if (parts.length < 3) return;
+      if (parts[0] !== latKey || parts[1] !== lngKey) return;
+      var cachedR = parseInt(parts[2], 10);
+      if (isNaN(cachedR)) return;
+      if (Math.abs(cachedR - radiusMeters) > Math.max(500, radiusMeters * 0.5)) return;
+      if (disk[k] && disk[k].elements && disk[k].elements.length && disk[k].at > nearAt) {
+        nearKey = k;
+        nearAt = disk[k].at;
+      }
+    });
+    if (nearKey && disk[nearKey].elements && disk[nearKey].elements.length && (Date.now() - nearAt) < PLACE_CACHE_STALE_MS) {
+      var filteredNear = filterOsmElementsByRadius(disk[nearKey].elements, center, radiusMeters);
+      if (filteredNear && filteredNear.length) {
+        setLoadingText('loadingText');
+        overpassQuery._usedStaleCache = true;
+        return filteredNear;
+      }
+    }
     setLoadingText('loadingText');
     throw lastError || new Error(t('errPlacesSearchFailed'));
+  }
+
+  function filterOsmElementsByRadius(elements, center, radiusMeters) {
+    if (!elements || !elements.length || !center) return elements || [];
+    var lat = center.lat;
+    var lon = center.lng != null ? center.lng : center.lon;
+    var maxM = (radiusMeters || 1500) * 1.12;
+    return elements.filter(function (el) {
+      var elat = el.lat != null ? el.lat : (el.center && el.center.lat);
+      var elon = el.lon != null ? el.lon : (el.center && el.center.lon);
+      if (elat == null || elon == null) return false;
+      return haversineKm({ lat: lat, lon: lon }, { lat: elat, lon: elon }) * 1000 <= maxM;
+    });
   }
 
   function isBadPlaceName(name) {
@@ -2637,12 +3268,34 @@
       lower === 'undefined' ||
       lower === 'n/a' ||
       lower === '-' ||
-      lower === '—'
+      lower === '—' ||
+      lower === 'restaurant' ||
+      lower === 'cafe' ||
+      lower === 'café' ||
+      lower === 'park' ||
+      lower === 'bar' ||
+      lower === 'shop' ||
+      lower === 'store' ||
+      lower === 'building' ||
+      lower === 'place' ||
+      lower === '식당' ||
+      lower === '카페' ||
+      lower === '공원' ||
+      lower === '음식점' ||
+      lower === '매장' ||
+      lower === '상호없음'
     ) {
       return true;
     }
-    // 숫자·기호만 있는 이름 제외
-    if (/^[\d\s\-_.·]+$/.test(n)) return true;
+    // 숫자·기호만 / 노드 id 형태
+    if (/^[\d\s\-_.·#]+$/.test(n)) return true;
+    if (/^(node|way|relation)[\s_-]*\d+$/i.test(n)) return true;
+    // 너무 일반적인 접두만 있는 이름
+    if (/^(restaurant|cafe|café|park|bar)\s*\d*$/i.test(n)) return true;
+    if (/^(식당|카페|공원|음식점)\s*\d*$/.test(n)) return true;
+    // 한글/영문 글자가 거의 없으면 제외
+    var letters = n.replace(/[^0-9A-Za-z가-힣ㄱ-ㅎㅏ-ㅣ]/g, '');
+    if (letters.length < 2) return true;
     return false;
   }
 
@@ -2650,20 +3303,69 @@
     if (!tags || typeof tags !== 'object') return false;
     if (tags['disused:amenity'] || tags['abandoned:amenity'] || tags['disused:shop'] || tags['abandoned:shop']) return true;
     if (tags['disused:tourism'] || tags['abandoned:tourism'] || tags['disused:leisure'] || tags['abandoned:leisure']) return true;
-    var ab = String(tags.abandoned || '').toLowerCase();
-    var dem = String(tags.demolished || '').toLowerCase();
-    var raz = String(tags.razed || '').toLowerCase();
-    if (ab === 'yes' || ab === '1') return true;
-    if (dem === 'yes' || dem === '1') return true;
-    if (raz === 'yes' || raz === '1') return true;
+    var yesish = function (v) {
+      var s = String(v || '').toLowerCase();
+      return s === 'yes' || s === '1' || s === 'true' || s === 'abandoned' || s === 'disused';
+    };
+    if (yesish(tags.abandoned) || yesish(tags.disused) || yesish(tags.demolished) || yesish(tags.razed) || yesish(tags.closed)) return true;
     var life = String(tags.lifecycle || '').toLowerCase();
     if (life === 'abandoned' || life === 'disused' || life === 'demolished' || life === 'ruins' || life === 'construction') return true;
     if (tags.construction) return true;
     if (String(tags.shop || '').toLowerCase() === 'vacant') return true;
     if (String(tags.amenity || '').toLowerCase() === 'vacant') return true;
+    if (String(tags.building || '').toLowerCase() === 'ruins') return true;
     var oh = String(tags.opening_hours || '').trim().toLowerCase();
-    if (oh === 'closed' || oh === 'off' || oh === 'permanently closed') return true;
+    if (oh === 'closed' || oh === 'off' || oh === 'permanently closed' || oh.indexOf('permanently closed') !== -1) return true;
     if (String(tags.access || '').toLowerCase() === 'no' && (tags.amenity || tags.shop || tags.tourism)) return true;
+    var nm = String(tags.name || tags['name:ko'] || '').toLowerCase();
+    if (/폐업|휴업|철거|폐쇄|closed|permanently closed|out of business/.test(nm)) return true;
+    // check_date가 매우 오래되고 상태 태그가 의심스러우면 제외에 가깝게 처리 (명시적 폐업은 위에서)
+    return false;
+  }
+
+  function isOsmDataStale(tags) {
+    if (!tags) return false;
+    var raw = tags.check_date || tags['check_date:opening_hours'] || tags.survey_date;
+    if (!raw) return false;
+    var m = String(raw).match(/(\d{4})/);
+    if (!m) return false;
+    var year = parseInt(m[1], 10);
+    var nowY = new Date().getFullYear();
+    return year > 1990 && year < (nowY - 4);
+  }
+
+  function isWeakPlaceCandidate(place) {
+    if (!place) return true;
+    if (isBadPlaceName(place.name)) return true;
+    if (isOsmPlaceClosed(place.tags)) return true;
+    if (isOsmLowRated(place.tags)) return true;
+    if (!(place.lat != null && place.lon != null)) return true;
+    return false;
+  }
+
+  function streetKeyOf(place) {
+    var tags = (place && place.tags) || {};
+    var street = tags['addr:street'] || tags['addr:road'] || tags['addr:full'] || '';
+    if (!street && place.addr) {
+      var parts = String(place.addr).split(/\s+/);
+      street = parts.length >= 2 ? parts.slice(0, 2).join(' ') : parts[0];
+    }
+    return street ? normalizePlaceNameForMatch(street).slice(0, 18) : '';
+  }
+
+  function gridKeyOf(place) {
+    if (!place || place.lat == null || place.lon == null) return '';
+    // ~140m 격자
+    return Math.round(Number(place.lat) * 750) + 'x' + Math.round(Number(place.lon) * 750);
+  }
+
+  function namesTooSimilar(a, b) {
+    var na = normalizePlaceNameForMatch(a);
+    var nb = normalizePlaceNameForMatch(b);
+    if (!na || !nb) return false;
+    if (na === nb) return true;
+    if (na.length >= 4 && nb.length >= 4 && (na.indexOf(nb) === 0 || nb.indexOf(na) === 0)) return true;
+    if (namePrefixKey(a) && namePrefixKey(a) === namePrefixKey(b) && Math.abs(na.length - nb.length) <= 2) return true;
     return false;
   }
 
@@ -2733,6 +3435,128 @@
     return null;
   }
 
+  function parseOsmFeeToWon(tags) {
+    if (!tags) return null;
+    var fee = tags.fee != null ? String(tags.fee).toLowerCase().trim() : '';
+    if (fee === 'no' || fee === 'free' || fee === '0') return 0;
+    var charge = tags.charge || tags['fee:amount'] || tags['payment:amount'] || tags['ticket:price'];
+    if (charge == null || charge === '') return fee === 'yes' ? null : null;
+    var raw = String(charge).replace(/,/g, '');
+    var m = raw.match(/(\d+(?:\.\d+)?)/);
+    if (!m) return null;
+    var n = parseFloat(m[1], 10);
+    if (isNaN(n)) return null;
+    if (/₩|원|krw/i.test(raw) || n >= 500) return Math.round(n);
+    if (/\$|usd/i.test(raw)) return Math.round(n * 1350);
+    if (/€|eur/i.test(raw)) return Math.round(n * 1450);
+    // OSM에 작은 숫자만 있으면 티어 추정으로 넘김
+    if (n > 0 && n < 20) return null;
+    return Math.round(n);
+  }
+
+  var PRICE_TIER_CHEAP_WORDS = ['분식', '김밥', '국밥', '버거', '라면', '떡볶이', '포장마차', 'burger', 'ramen', 'gimbap', 'kimbap', 'tteokbokki'];
+  var PRICE_TIER_EXPENSIVE_WORDS = ['스시', '오마카세', '스테이크', '파인다이닝', '한우', '와인', 'sushi', 'omakase', 'steak', 'wagyu', 'fine dining'];
+
+  function priceTierFromNameAndCuisine(place) {
+    var tags = (place && place.tags) || {};
+    var text = [
+      place && place.name,
+      tags.name,
+      tags['name:ko'],
+      tags['name:en'],
+      tags.cuisine,
+      tags['cuisine:ko']
+    ].join(' ').toLowerCase();
+    if (!text.trim()) return null;
+    var cheap = false;
+    var expensive = false;
+    for (var i = 0; i < PRICE_TIER_CHEAP_WORDS.length; i++) {
+      if (text.indexOf(PRICE_TIER_CHEAP_WORDS[i]) !== -1) { cheap = true; break; }
+    }
+    for (var j = 0; j < PRICE_TIER_EXPENSIVE_WORDS.length; j++) {
+      if (text.indexOf(PRICE_TIER_EXPENSIVE_WORDS[j].toLowerCase()) !== -1) { expensive = true; break; }
+    }
+    if (cheap && expensive) return 'normal';
+    if (cheap) return 'cheap';
+    if (expensive) return 'expensive';
+    return null;
+  }
+
+  function inferPlacePriceTier(place) {
+    if (!place) return 'normal';
+    if (place.priceTier) return place.priceTier;
+    var tags = place.tags || {};
+    var fromTag = parseOsmPriceTag(tags.price) || parseOsmPriceTag(tags['price:class']);
+    if (fromTag) return fromTag;
+    if (tags.fee != null && String(tags.fee).toLowerCase() === 'free') return 'cheap';
+    if (place.typeKey === 'fast_food' || place.typeKey === 'ice_cream') return 'cheap';
+    if (place.typeKey === 'theme_park' || place.typeKey === 'bar') return 'expensive';
+    var fromName = priceTierFromNameAndCuisine(place);
+    if (fromName) return fromName;
+    return 'normal';
+  }
+
+  function estimatePlaceCostWon(place, userTier) {
+    var tier = userTier || getPriceTier();
+    var slot = getPoolIndexAndSlotType((place && place.typeKey) || 'restaurant').slotTypeKey;
+    var baseTable = ESTIMATED_COST_BY_TIER[tier] || ESTIMATED_COST_BY_TIER.normal;
+    var base = baseTable[slot] != null ? baseTable[slot] : 15000;
+    var mult = ESTIMATED_COST_TYPE_MULT[(place && place.typeKey) || ''];
+    if (mult == null) mult = 1;
+    var cost = Math.round(base * mult);
+
+    var tags = (place && place.tags) || {};
+    var cuisine = String(tags.cuisine || tags['cuisine:ko'] || '');
+    if (cuisine) {
+      for (var ci = 0; ci < ESTIMATED_COST_CUISINE_MULT.length; ci++) {
+        if (ESTIMATED_COST_CUISINE_MULT[ci].re.test(cuisine)) {
+          cost = Math.round(cost * ESTIMATED_COST_CUISINE_MULT[ci].mult);
+          break;
+        }
+      }
+    }
+
+    var osmFee = parseOsmFeeToWon(place && place.tags);
+    if (osmFee != null) {
+      // 입장료가 명시된 놀거리/공원은 OSM 값을 우선, 식음은 티어 추정 유지
+      if (slot === 'activity' || slot === 'park') cost = osmFee;
+    }
+
+    var placeTier = inferPlacePriceTier(place);
+    if (placeTier && placeTier !== tier) {
+      if (placeTier === 'cheap') cost = Math.round(cost * 0.72);
+      else if (placeTier === 'expensive') cost = Math.round(cost * 1.32);
+    }
+
+    // 고급 신호: stars/Michelin-ish / outdoor_seating만으로는 소폭
+    var stars = parseFloat(String(tags.stars || tags.rating || '').replace(',', '.'), 10);
+    if (!isNaN(stars) && stars >= 4.5) cost = Math.round(cost * 1.08);
+
+    if (slot === 'park' && osmFee == null) cost = 0;
+    // 티어별 하한·상한으로 비현실적 값 방지
+    var caps = {
+      cheap: { restaurant: [12000, 28000], cafe: [6000, 14000], activity: [0, 40000], park: [0, 8000] },
+      normal: { restaurant: [18000, 65000], cafe: [9000, 24000], activity: [0, 70000], park: [0, 10000] },
+      expensive: { restaurant: [40000, 140000], cafe: [12000, 40000], activity: [0, 120000], park: [0, 20000] }
+    };
+    var cap = (caps[tier] || caps.normal)[slot];
+    if (cap) cost = Math.max(cap[0], Math.min(cap[1], cost));
+    return Math.max(0, cost);
+  }
+
+  function sumPlanEstimatedCost(plan, userTier) {
+    if (!plan || !plan.length) return 0;
+    var tier = userTier || getPriceTier();
+    var sum = 0;
+    for (var i = 0; i < plan.length; i++) {
+      var c = plan[i].estimatedCostWon;
+      if (c == null) c = estimatePlaceCostWon(plan[i], tier);
+      plan[i].estimatedCostWon = c;
+      sum += c;
+    }
+    return sum;
+  }
+
   function parseElements(elements) {
     var places = [];
     for (var i = 0; i < elements.length; i++) {
@@ -2765,8 +3589,13 @@
         else if (t2 === 'attraction') { type = t('type_attraction'); typeKey = 'attraction'; }
         else { type = t2; typeKey = 'place'; }
       } else if (tags.shop) {
-        type = tags.shop === 'mall' ? t('type_mall') : tags.shop;
-        typeKey = tags.shop === 'mall' ? 'mall' : 'place';
+        if (tags.shop === 'mall' || tags.shop === 'department_store') {
+          type = t('type_mall');
+          typeKey = 'mall';
+        } else {
+          type = tags.shop;
+          typeKey = 'place';
+        }
       } else if (tags.leisure) {
         var lev = tags.leisure;
         if (lev === 'park' || lev === 'garden') { type = t('type_park'); typeKey = 'park'; }
@@ -2779,23 +3608,57 @@
     return places;
   }
 
-  function getCongestion(place) {
+  function getCategoryScoreDivisor(typeKey) {
+    if (!typeKey) return 1;
+    if (typeKey === 'park') return 0.5;
+    if (typeKey === 'museum' || typeKey === 'gallery') return 0.75;
+    if (typeKey === 'attraction' || typeKey === 'theme_park') return 0.85;
+    if (typeKey === 'cafe' || typeKey === 'ice_cream') return 0.9;
+    return 1;
+  }
+
+  function hashJitter(place) {
     var key = (place.name || '') + (place.lat || 0).toFixed(4) + (place.lon || 0).toFixed(4);
     var n = 0;
     for (var i = 0; i < key.length; i++) n = (n * 31 + key.charCodeAt(i)) >>> 0;
-    var r = (n % 100) / 100;
-    if (r < 0.4) return { level: 'relaxed', labelKey: 'congestionRelaxed' };
-    if (r < 0.75) return { level: 'normal', labelKey: 'congestionNormal' };
+    return n % 16;
+  }
+
+  function scoreCongestionOsm(place) {
+    var tags = (place && place.tags) || {};
+    var score = 28 + hashJitter(place || {});
+    var tourism = String(tags.tourism || '').toLowerCase();
+    if (tourism === 'attraction' || tourism === 'theme_park' || tourism === 'zoo' || tourism === 'aquarium') score += 25;
+    if (tourism === 'museum' || tourism === 'gallery') score += 12;
+    if (String(tags.shop || '').toLowerCase() === 'mall' || (place && place.typeKey === 'mall')) score += 20;
+    if (tags.wikipedia || tags.wikidata) score += 15;
+    if (tags.brand || tags['brand:wikidata']) score += 10;
+    var cap = parseInt(tags.capacity, 10);
+    if (!isNaN(cap) && cap > 0) score += Math.min(20, Math.floor(Math.log10(cap + 1) * 10));
+    return Math.max(0, Math.min(100, score));
+  }
+
+  function levelFromCongestionScore(score) {
+    if (score < 38) return { level: 'relaxed', labelKey: 'congestionRelaxed' };
+    if (score < 68) return { level: 'normal', labelKey: 'congestionNormal' };
     return { level: 'busy', labelKey: 'congestionBusy' };
   }
 
+  function getCongestion(place) {
+    if (place && place._congestionScore != null) return levelFromCongestionScore(place._congestionScore);
+    return levelFromCongestionScore(scoreCongestionOsm(place || {}));
+  }
+
   function isNaverSearchConfigured() {
-    // Netlify 함수가 설정되어 있다고 가정
     return true;
   }
 
   function fetchNaverLocalSearch(query, sort) {
     if (!query || !String(query).trim()) return Promise.resolve(null);
+    var cacheKey = String(query).trim().toLowerCase() + '|' + (sort === 'comment' ? 'comment' : 'random');
+    if (Object.prototype.hasOwnProperty.call(naverSearchCache, cacheKey)) {
+      return Promise.resolve(naverSearchCache[cacheKey]);
+    }
     var url =
       NAVER_SEARCH_LOCAL_URL +
       '?query=' +
@@ -2805,20 +3668,272 @@
     return fetch(url)
       .then(function (res) { return res.json(); })
       .then(function (data) {
-        if (data.errorCode) return null;
+        if (data.errorCode) {
+          naverSearchCache[cacheKey] = null;
+          return null;
+        }
         var total = (data.total != null) ? parseInt(data.total, 10) : 0;
         var items = (data.items && Array.isArray(data.items)) ? data.items : [];
-        return { total: isNaN(total) ? 0 : total, items: items };
+        var result = { total: isNaN(total) ? 0 : total, items: items };
+        naverSearchCache[cacheKey] = result;
+        return result;
       })
-      .catch(function () { return null; });
+      .catch(function () {
+        naverSearchCache[cacheKey] = null;
+        return null;
+      });
   }
 
-  function getCategoryScoreDivisor(typeKey) {
-    if (!typeKey) return 1;
-    if (typeKey === 'park') return 0.5;
-    if (typeKey === 'museum' || typeKey === 'gallery') return 0.75;
-    if (typeKey === 'attraction' || typeKey === 'theme_park') return 0.85;
-    return 1;
+  function mapWithConcurrency(items, limit, worker) {
+    var out = new Array(items.length);
+    var i = 0;
+    function next() {
+      if (i >= items.length) return Promise.resolve();
+      var idx = i++;
+      return Promise.resolve(worker(items[idx], idx)).then(function (v) {
+        out[idx] = v;
+        return next();
+      });
+    }
+    var starters = [];
+    for (var c = 0; c < Math.min(limit, items.length); c++) starters.push(next());
+    return Promise.all(starters).then(function () { return out; });
+  }
+
+  function enrichPlacesCongestionWithNaver(places, maxCount) {
+    if (!places || !places.length || !isNaverSearchConfigured()) return Promise.resolve(places);
+    var limit = maxCount != null ? maxCount : 12;
+    var targets = places.slice(0, limit);
+    return mapWithConcurrency(targets, 3, function (p) {
+      return fetchNaverLocalSearch(p.name, 'comment').then(function (nr) {
+        var base = scoreCongestionOsm(p);
+        if (nr && nr.total != null) {
+          var boost = Math.min(40, Math.log10(nr.total + 1) * 20);
+          var div = getCategoryScoreDivisor(p.typeKey) || 1;
+          p._congestionScore = Math.max(0, Math.min(100, base + boost / div));
+          p._naverTotal = nr.total;
+        } else {
+          p._congestionScore = base;
+        }
+        return p;
+      });
+    }).then(function () { return places; });
+  }
+
+  var DAY_ALIASES = {
+    mo: 1, tu: 2, we: 3, th: 4, fr: 5, sa: 6, su: 0,
+    mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 0
+  };
+
+  function parseDayToken(tok) {
+    tok = String(tok || '').toLowerCase().replace(/\./g, '');
+    return DAY_ALIASES[tok];
+  }
+
+  function expandDayRange(a, b) {
+    var out = [];
+    if (a == null || b == null) return out;
+    var cur = a;
+    for (var n = 0; n < 7; n++) {
+      out.push(cur);
+      if (cur === b) break;
+      cur = (cur + 1) % 7;
+    }
+    return out;
+  }
+
+  function parseTimeToMin(hhmm) {
+    var m = String(hhmm || '').match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return null;
+    var h = parseInt(m[1], 10);
+    var mi = parseInt(m[2], 10);
+    if (h > 24 || mi > 59) return null;
+    return Math.min(24 * 60, h * 60 + mi);
+  }
+
+  function parseOpeningHours(ohRaw) {
+    var oh = String(ohRaw || '').trim();
+    if (!oh) return { unknown: true };
+    var lower = oh.toLowerCase();
+    if (lower === '24/7') return { alwaysOpen: true };
+    if (lower === 'closed' || lower === 'off' || lower === 'permanently closed') return { closed: true };
+    var rules = [];
+    var parts = oh.split(';');
+    for (var pi = 0; pi < parts.length; pi++) {
+      var part = parts[pi].trim();
+      if (!part) continue;
+      if (/^ph\b/i.test(part)) continue;
+      if (/^(closed|off)$/i.test(part)) {
+        rules.push({ days: null, closed: true });
+        continue;
+      }
+      var rm = part.match(/^([A-Za-z]{2}(?:-[A-Za-z]{2})?(?:,[A-Za-z]{2}(?:-[A-Za-z]{2})?)*)\s+(.+)$/);
+      if (!rm) continue;
+      var dayPart = rm[1];
+      var timePart = rm[2].trim();
+      var days = [];
+      dayPart.split(',').forEach(function (seg) {
+        var ab = seg.split('-');
+        var d0 = parseDayToken(ab[0]);
+        var d1 = ab[1] ? parseDayToken(ab[1]) : d0;
+        days = days.concat(expandDayRange(d0, d1));
+      });
+      if (/^(closed|off)$/i.test(timePart)) {
+        rules.push({ days: days, closed: true });
+        continue;
+      }
+      var tm = timePart.match(/^(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
+      if (!tm) continue;
+      var openMin = parseTimeToMin(tm[1]);
+      var closeMin = parseTimeToMin(tm[2]);
+      if (openMin == null || closeMin == null) continue;
+      rules.push({ days: days, openMin: openMin, closeMin: closeMin });
+    }
+    if (!rules.length) return { unknown: true };
+    return { rules: rules };
+  }
+
+  function isOpenAtParsed(parsed, dayOfWeek, minuteOfDay) {
+    if (!parsed || parsed.unknown) return null;
+    if (parsed.alwaysOpen) return true;
+    if (parsed.closed) return false;
+    var matched = false;
+    var open = false;
+    for (var i = 0; i < parsed.rules.length; i++) {
+      var r = parsed.rules[i];
+      if (r.days && r.days.indexOf(dayOfWeek) === -1) continue;
+      matched = true;
+      if (r.closed) { open = false; continue; }
+      if (r.closeMin <= r.openMin) {
+        if (minuteOfDay >= r.openMin || minuteOfDay < r.closeMin) open = true;
+      } else if (minuteOfDay >= r.openMin && minuteOfDay < r.closeMin) {
+        open = true;
+      }
+    }
+    if (!matched) return null;
+    return open;
+  }
+
+  function getPlanDateForHours() {
+    if (fourDayForecast && fourDayForecast[selectedForecastDayIndex] && fourDayForecast[selectedForecastDayIndex].date) {
+      var d = fourDayForecast[selectedForecastDayIndex].date;
+      if (typeof d === 'string') return new Date(d + 'T12:00:00');
+      if (d instanceof Date) return d;
+    }
+    return new Date();
+  }
+
+  function isOpenDuringSlot(tags, startMin, endMin) {
+    if (!tags || !tags.opening_hours) return true;
+    var parsed = parseOpeningHours(tags.opening_hours);
+    if (parsed.unknown || parsed.alwaysOpen) return true;
+    if (parsed.closed) return false;
+    var date = getPlanDateForHours();
+    var dow = date.getDay();
+    var checkPoints = [startMin, Math.floor((startMin + endMin) / 2)];
+    if (endMin - startMin > 15) checkPoints.push(Math.max(startMin, endMin - 10));
+    for (var i = 0; i < checkPoints.length; i++) {
+      if (isOpenAtParsed(parsed, dow, checkPoints[i] % (24 * 60)) === false) return false;
+    }
+    return true;
+  }
+
+  var INDOOR_TYPE_KEYS = ['museum', 'gallery', 'mall', 'cafe', 'ice_cream', 'restaurant', 'fast_food', 'bar'];
+  var OUTDOOR_TYPE_KEYS = ['park', 'theme_park', 'attraction'];
+
+  function preferIndoorForTheme(theme) {
+    return theme === 'rain' || theme === 'dust' || theme === 'fog';
+  }
+
+  function sortPoolByWeather(pool, theme) {
+    if (!pool || !pool.length || !preferIndoorForTheme(theme)) return pool.slice();
+    return pool.slice().sort(function (a, b) {
+      var ai = INDOOR_TYPE_KEYS.indexOf(a.typeKey) !== -1 ? 1 : 0;
+      var bi = INDOOR_TYPE_KEYS.indexOf(b.typeKey) !== -1 ? 1 : 0;
+      var ao = OUTDOOR_TYPE_KEYS.indexOf(a.typeKey) !== -1 ? 1 : 0;
+      var bo = OUTDOOR_TYPE_KEYS.indexOf(b.typeKey) !== -1 ? 1 : 0;
+      return (bi - ai) || (ao - bo);
+    });
+  }
+
+  function haversineKm(a, b) {
+    var R = 6371;
+    var dLat = (b.lat - a.lat) * Math.PI / 180;
+    var dLon = (b.lon - a.lon) * Math.PI / 180;
+    var lat1 = a.lat * Math.PI / 180;
+    var lat2 = b.lat * Math.PI / 180;
+    var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  function estimateTravelMinutes(from, to, profile) {
+    var km = haversineKm(from, to);
+    var speed = profile === 'driving' ? 25 : 4.5;
+    return Math.max(3, Math.ceil((km / speed) * 60));
+  }
+
+  function applyTravelTimesToPlan(plan, dayStartMin, dayEndMin) {
+    if (!plan || plan.length === 0) return Promise.resolve({ plan: plan, overrun: false });
+    var profile = getTransportProfile();
+    var stays = plan.map(function (p) {
+      var raw = timeToMinutes(p.timeEnd) - timeToMinutes(p.timeStart);
+      if (isNaN(raw) || raw < 0) raw = 15;
+      // overrun으로 이미 줄인 체류는 다시 15분으로 부풀리지 않음
+      if (p && p._overrunShortened) return Math.max(0, raw);
+      return Math.max(15, raw);
+    });
+    var coords = plan.map(function (p) { return { lat: p.lat, lon: p.lon }; });
+
+    function rebuild(travelMins) {
+      var tCur = dayStartMin;
+      var overrun = false;
+      for (var i = 0; i < plan.length; i++) {
+        if (i > 0) {
+          var move = travelMins[i] != null ? travelMins[i] : 8;
+          plan[i].travelFromPrevMin = move;
+          tCur += move;
+        } else {
+          plan[i].travelFromPrevMin = 0;
+        }
+        var stay = stays[i];
+        var endT = tCur + stay;
+        if (dayEndMin != null && endT > dayEndMin) {
+          overrun = true;
+          var rem = dayEndMin - tCur;
+          if (rem <= 0) {
+            stay = 0;
+            endT = tCur;
+          } else {
+            stay = rem;
+            endT = tCur + stay;
+          }
+          plan[i]._overrunShortened = true;
+        }
+        plan[i].timeStart = minutesToTime(tCur);
+        plan[i].timeEnd = minutesToTime(endT);
+        tCur = endT;
+      }
+      return { plan: plan, overrun: overrun };
+    }
+
+    if (plan.length < 2) return Promise.resolve(rebuild([]));
+
+    return osrmTable(coords, profile).then(function (data) {
+      var travelMins = [0];
+      for (var i = 1; i < plan.length; i++) {
+        var sec = data && data.durations && data.durations[i - 1] ? data.durations[i - 1][i] : null;
+        if (sec != null && !isNaN(sec) && sec >= 0) travelMins[i] = Math.max(2, Math.ceil(sec / 60));
+        else travelMins[i] = estimateTravelMinutes(coords[i - 1], coords[i], profile);
+      }
+      return rebuild(travelMins);
+    }).catch(function () {
+      var travelMins = [0];
+      for (var j = 1; j < plan.length; j++) {
+        travelMins[j] = estimateTravelMinutes(coords[j - 1], coords[j], profile);
+      }
+      return rebuild(travelMins);
+    });
   }
 
   function enrichPlanWithNaverCongestion(plan) {
@@ -2975,11 +4090,18 @@
   }
 
   function timeToMinutes(timeStr) {
-    var parts = timeStr.split(':').map(Number);
-    return parts[0] * 60 + parts[1];
+    if (timeStr == null || timeStr === '') return 0;
+    var parts = String(timeStr).split(':').map(Number);
+    var h = parts[0];
+    var m = parts[1];
+    if (isNaN(h)) h = 0;
+    if (isNaN(m)) m = 0;
+    return h * 60 + m;
   }
 
   function minutesToTime(min) {
+    if (min == null || isNaN(min)) min = 0;
+    min = Math.max(0, Math.round(Number(min)));
     var h = Math.floor(min / 60) % 24;
     var m = min % 60;
     return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m;
@@ -3013,28 +4135,30 @@
       showError(t('errNoLocationPick'));
       return;
     }
-    if (!navigator.geolocation) {
-      showError(t('errNoGeolocation'));
-      return;
-    }
-    if (typeof window.isSecureContext === 'boolean' && !window.isSecureContext) {
-      showError(t('errLocationInsecure'));
-      return;
-    }
-    if (mapHint) mapHint.textContent = t('locationConfirming');
-    navigator.geolocation.getCurrentPosition(
-      function (pos) {
-        var c = { lat: pos.coords.latitude, lng: pos.coords.longitude, name: t('currentLocation') };
-        if (mapHint) mapHint.textContent = t('locationConfirmed');
-        cb(c);
-      },
-      function (err) {
-        var msg = (err && err.code === 1) ? t('errLocationPermissionDenied') : t('errLocationFailed');
-        if (mapHint) mapHint.textContent = msg;
-        showError(msg);
-      },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-    );
+    requestLocationConsentThen(function () {
+      if (!navigator.geolocation) {
+        showError(t('errNoGeolocation'));
+        return;
+      }
+      if (typeof window.isSecureContext === 'boolean' && !window.isSecureContext) {
+        showError(t('errLocationInsecure'));
+        return;
+      }
+      if (mapHint) mapHint.textContent = t('locationConfirming');
+      navigator.geolocation.getCurrentPosition(
+        function (pos) {
+          var c = { lat: pos.coords.latitude, lng: pos.coords.longitude, name: t('currentLocation') };
+          if (mapHint) mapHint.textContent = t('locationConfirmed');
+          cb(c);
+        },
+        function (err) {
+          var msg = (err && err.code === 1) ? t('errLocationPermissionDenied') : t('errLocationFailed');
+          if (mapHint) mapHint.textContent = msg;
+          showError(msg);
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      );
+    });
   }
 
   var DEFAULT_COURSE_ORDER = ['restaurant', 'cafe', 'activity', 'park'];
@@ -3077,6 +4201,22 @@
       currentOrder.splice(toRemoveIdx, 1);
     }
 
+    // 바로 앞 칸과 같은 종류가 연속되지 않게 바꿈. 식당 다음이 항상 카페로 고정되지 않음
+    for (var di = 1; di < currentOrder.length; di++) {
+      if (currentOrder[di] !== currentOrder[di - 1]) continue;
+      var options = slotTypesAvoiding(currentOrder[di - 1], di, null);
+      var pickT = options[0];
+      for (var oi = 0; oi < options.length; oi++) {
+        if (currentOrder.indexOf(options[oi]) === -1) {
+          pickT = options[oi];
+          break;
+        }
+      }
+      currentOrder[di] = pickT;
+      var removedIdx = removed.indexOf(pickT);
+      if (removedIdx !== -1) removed.splice(removedIdx, 1);
+    }
+
     // 2단계: 기본(P 여부에 따른) 목표 시간 배분
     var durations = [];
     var need = 0;
@@ -3089,8 +4229,8 @@
       need += d;
     }
 
-    // 3단계: 기본 모드(선택 안함/J)에서만 전체 시간에 맞게 스케일 조정
-    if (need > totalMin && currentOrder.length > 0 && !generous) {
+    // 3단계: 총 시간을 넘기면(여유 P 포함) 스케일 조정
+    if (need > totalMin && currentOrder.length > 0) {
       var scale = totalMin / need;
       for (var jj = 0; jj < durations.length; jj++) {
         durations[jj] = Math.max(15, Math.floor(durations[jj] * scale));
@@ -3175,8 +4315,285 @@
   }
 
   function showPlanIssues(reasons) {
+    // 치명적이지 않은 안내는 결과 화면 요약에 이미 보이므로 alert는 생략
     if (!reasons || !reasons.length) return;
-    showError(reasons.join('\n'));
+  }
+
+  function haversineMeters(a, b) {
+    if (!a || !b || a.lat == null || b.lat == null) return 99999;
+    return haversineKm(
+      { lat: a.lat, lon: a.lon != null ? a.lon : a.lng },
+      { lat: b.lat, lon: b.lon != null ? b.lon : b.lng }
+    ) * 1000;
+  }
+
+  function namePrefixKey(name) {
+    return String(name || '').replace(/\s+/g, '').slice(0, 4).toLowerCase();
+  }
+
+  function scorePlaceCandidate(place, ctx) {
+    if (!place) return -1e9;
+    if (isWeakPlaceCandidate(place)) return -1e9;
+    var score = 0;
+    var cong = (place._congestionScore != null) ? place._congestionScore : scoreCongestionOsm(place);
+    score += cong * 0.55;
+
+    var tier = ctx.tier || 'normal';
+    var placeTier = inferPlacePriceTier(place);
+    if (placeTier === tier) score += 18;
+    else if (placeTier === 'normal' || tier === 'normal') score += 6;
+    else score -= 8;
+
+    var theme = ctx.theme;
+    if (preferIndoorForTheme(theme)) {
+      if (INDOOR_TYPE_KEYS.indexOf(place.typeKey) !== -1) score += 26;
+      if (OUTDOOR_TYPE_KEYS.indexOf(place.typeKey) !== -1) score -= 36;
+    } else if (theme === 'fine') {
+      if (place.typeKey === 'park' || place.typeKey === 'attraction') score += 12;
+      if (place.typeKey === 'mall') score -= 4;
+    }
+
+    if (place.tags && place.tags.opening_hours) score += 14;
+    else score -= 6;
+    if (place.tags && (place.tags.wikipedia || place.tags.wikidata)) score += 6;
+    if (place.addr && String(place.addr).length > 4) score += 5;
+    if (isOsmDataStale(place.tags)) score -= 16;
+
+    var prev = ctx.prev;
+    if (prev) {
+      var meters = haversineMeters(prev, place);
+      var profile = ctx.transportProfile || 'walk';
+      var travelEst = estimateTravelMinutes(
+        { lat: prev.lat, lon: prev.lon != null ? prev.lon : prev.lng },
+        { lat: place.lat, lon: place.lon },
+        profile
+      );
+      if (meters < 70) score -= 45;
+      else if (meters < 320) score += 18;
+      else if (meters < 900) score += 12;
+      else if (meters < 1600) score += 4;
+      else if (meters > 3200) score -= 22;
+
+      if (travelEst <= 8) score += 10;
+      else if (travelEst <= 15) score += 5;
+      else if (travelEst >= 28) score -= 14;
+
+      var prevSlot = getPoolIndexAndSlotType(prev.typeKey || 'restaurant').slotTypeKey;
+      var curSlot = getPoolIndexAndSlotType(place.typeKey || 'restaurant').slotTypeKey;
+      if (prevSlot === curSlot) score -= 18;
+
+      if (namesTooSimilar(prev.name, place.name)) score -= 28;
+    }
+
+    if (ctx.usedPrefixes && ctx.usedPrefixes[namePrefixKey(place.name)]) score -= 16;
+    if (ctx.usedNames) {
+      for (var ui = 0; ui < ctx.usedNames.length; ui++) {
+        if (namesTooSimilar(ctx.usedNames[ui], place.name)) { score -= 22; break; }
+      }
+    }
+
+    var sk = streetKeyOf(place);
+    if (sk && ctx.usedStreets && ctx.usedStreets[sk]) score -= 24;
+    var gk = gridKeyOf(place);
+    if (gk && ctx.usedGrids && ctx.usedGrids[gk]) score -= 20;
+    // 인접 격자 몰림
+    if (gk && ctx.usedGrids) {
+      var parts = gk.split('x');
+      var gx = parseInt(parts[0], 10);
+      var gy = parseInt(parts[1], 10);
+      if (!isNaN(gx) && !isNaN(gy)) {
+        for (var dx = -1; dx <= 1; dx++) {
+          for (var dy = -1; dy <= 1; dy++) {
+            if (!dx && !dy) continue;
+            if (ctx.usedGrids[(gx + dx) + 'x' + (gy + dy)]) score -= 8;
+          }
+        }
+      }
+    }
+
+    if (ctx.usedSlots) {
+      var slot = getPoolIndexAndSlotType(place.typeKey || 'restaurant').slotTypeKey;
+      if (ctx.usedSlots[slot] >= 1) score -= 10;
+    }
+
+    // 시작점 기준으로 너무 바깥쪽만 몰리지 않게
+    if (ctx.center) {
+      var fromCenter = haversineMeters(ctx.center, { lat: place.lat, lon: place.lon });
+      if (fromCenter < (ctx.radiusMeters || 1500) * 0.85) score += 4;
+      else if (fromCenter > (ctx.radiusMeters || 1500) * 1.05) score -= 8;
+    }
+
+    return score;
+  }
+
+  function rankCandidates(list, ctx) {
+    return list.slice().sort(function (a, b) {
+      return scorePlaceCandidate(b, ctx) - scorePlaceCandidate(a, ctx);
+    });
+  }
+
+  var recentCourseNames = [];
+
+  function rememberPlanNames(plan) {
+    if (!plan || !plan.length) return;
+    for (var i = 0; i < plan.length; i++) {
+      var key = normalizePlaceNameForMatch(plan[i] && plan[i].name);
+      if (!key) continue;
+      var idx = recentCourseNames.indexOf(key);
+      if (idx !== -1) recentCourseNames.splice(idx, 1);
+      recentCourseNames.unshift(key);
+    }
+    if (recentCourseNames.length > 30) recentCourseNames.length = 30;
+  }
+
+  function preferFreshCandidates(list) {
+    if (!list || list.length < 2 || !recentCourseNames.length) return list || [];
+    var fresh = list.filter(function (place) {
+      return recentCourseNames.indexOf(normalizePlaceNameForMatch(place && place.name)) === -1;
+    });
+    if (fresh.length) return fresh;
+    return list.slice().sort(function (a, b) {
+      var ia = recentCourseNames.indexOf(normalizePlaceNameForMatch(a && a.name));
+      var ib = recentCourseNames.indexOf(normalizePlaceNameForMatch(b && b.name));
+      if (ia < 0) ia = 999;
+      if (ib < 0) ib = 999;
+      return ib - ia;
+    });
+  }
+
+  function buildPlanWhyItems(opts) {
+    var items = [];
+    if (opts.usedFallback) items.push(t('whyFallback'));
+    if (opts.weatherIndoorBias) items.push(t('whyIndoor'));
+    else if (opts.weatherOutdoorBias) items.push(t('whyOutdoor'));
+    if (opts.totalTravelMin != null && opts.totalTravelMin > 0) {
+      items.push(t('whyTravel').replace('%s', String(opts.totalTravelMin)));
+    }
+    if (opts.routeOptimized) items.push(t('whyRoute'));
+    if (opts.congestionPref && opts.congestionPref !== 'normal') items.push(t('whyCongestion'));
+    if (opts.budgetUsed) items.push(t('whyBudget'));
+    if (opts.diversified) items.push(t('whyDiversity'));
+    if (opts.streetSpread) items.push(t('whyStreetSpread'));
+    if (opts.hoursRelaxed) items.push(t('whyHoursRelaxed'));
+    else if (opts.hoursFiltered) items.push(t('whyHours'));
+    items.push(t('tipVerify'));
+    return items;
+  }
+
+  function buildEmergencyFallbackPlan(ctx) {
+    var allPlaces = (ctx.allPlaces || []).filter(function (p) { return !isWeakPlaceCandidate(p); });
+    if (!allPlaces.length) return { plan: [], substituted: [], usedFallback: true };
+    var order = (ctx.finalOrder && ctx.finalOrder.length) ? ctx.finalOrder.slice() : ['restaurant', 'cafe', 'activity'];
+    var durations = ctx.slotDurations || order.map(function () { return 70; });
+    var plan = [];
+    var used = {};
+    var usedPrefixes = {};
+    var usedStreets = {};
+    var usedGrids = {};
+    var usedSlots = {};
+    var usedNames = [];
+    var substituted = [];
+    var tMin = ctx.start || 12 * 60;
+    var endLimit = ctx.end != null ? ctx.end : tMin + 360;
+    var typeToPoolIndex = { restaurant: 0, cafe: 1, activity: 2, park: 3 };
+    var pools = ctx.pools || [];
+
+    for (var i = 0; i < order.length; i++) {
+      var slotType = order[i];
+      var prevType = plan.length ? placeSlotType(plan[plan.length - 1]) : null;
+      var typeTryOrder = slotTypesAvoiding(prevType, i, slotType !== prevType ? slotType : null);
+      var scoreCtx = {
+        tier: ctx.tier || 'normal',
+        theme: ctx.theme,
+        prev: plan.length ? plan[plan.length - 1] : null,
+        center: ctx.center,
+        radiusMeters: ctx.radiusMeters || 1500,
+        usedPrefixes: usedPrefixes,
+        usedStreets: usedStreets,
+        usedGrids: usedGrids,
+        usedSlots: usedSlots,
+        usedNames: usedNames,
+        transportProfile: ctx.transportProfile || 'walk'
+      };
+      var available = [];
+      for (var ti = 0; ti < typeTryOrder.length && !available.length; ti++) {
+        var tryIdx = typeToPoolIndex[typeTryOrder[ti]];
+        var tryPool = (pools[tryIdx] && pools[tryIdx].length) ? pools[tryIdx] : [];
+        if (!tryPool.length) continue;
+        available = rankCandidates(tryPool.filter(function (p) {
+          return !used[p.name] && !isWeakPlaceCandidate(p);
+        }), scoreCtx);
+      }
+      if (!available.length) {
+        available = excludePreviousCategory(rankCandidates(allPlaces.filter(function (p) {
+          return !used[p.name] && !isWeakPlaceCandidate(p);
+        }), scoreCtx), prevType);
+      }
+      available = preferFreshCandidates(available);
+      var pick = available[0];
+      if (!pick) continue;
+      used[pick.name] = true;
+      usedPrefixes[namePrefixKey(pick.name)] = true;
+      usedNames.push(pick.name);
+      var sk = streetKeyOf(pick);
+      var gk = gridKeyOf(pick);
+      if (sk) usedStreets[sk] = true;
+      if (gk) usedGrids[gk] = true;
+      var gotSlot = getPoolIndexAndSlotType(pick.typeKey || 'restaurant').slotTypeKey;
+      usedSlots[gotSlot] = (usedSlots[gotSlot] || 0) + 1;
+      if (gotSlot !== slotType) substituted.push({ wanted: slotType, got: gotSlot });
+      var remaining = endLimit - tMin;
+      if (remaining < 20) break;
+      var dur = Math.min(durations[i] || 70, remaining);
+      var endT = tMin + dur;
+      plan.push({
+        name: pick.name,
+        type: pick.type,
+        typeKey: pick.typeKey || 'place',
+        lat: pick.lat,
+        lon: pick.lon,
+        addr: pick.addr,
+        tags: pick.tags,
+        timeStart: minutesToTime(tMin),
+        timeEnd: minutesToTime(endT),
+        congestion: getCongestion(pick),
+        estimatedCostWon: estimatePlaceCostWon(pick, ctx.tier || 'normal'),
+        pickWhy: [t('whyFallback')].slice(0, 1)
+      });
+      tMin = endT;
+    }
+    return { plan: plan, substituted: substituted, usedFallback: true };
+  }
+
+  var SLOT_TYPE_CYCLE = ['activity', 'park', 'cafe', 'restaurant'];
+
+  function placeSlotType(place) {
+    return getPoolIndexAndSlotType((place && place.typeKey) || 'restaurant').slotTypeKey;
+  }
+
+  function slotTypesAvoiding(prevType, index, preferred) {
+    var types = SLOT_TYPE_CYCLE.filter(function (typeName) { return typeName !== prevType; });
+    var rot = Math.abs(index || 0) % types.length;
+    types = types.slice(rot).concat(types.slice(0, rot));
+    if (preferred && preferred !== prevType) {
+      types = [preferred].concat(types.filter(function (typeName) { return typeName !== preferred; }));
+    }
+    return types;
+  }
+
+  function excludePreviousCategory(list, prevType) {
+    if (!list || !list.length) return [];
+    if (!prevType) return list;
+    return list.filter(function (place) { return placeSlotType(place) !== prevType; });
+  }
+
+  function totalTravelMinutes(plan) {
+    if (!plan || !plan.length) return 0;
+    var sum = 0;
+    for (var i = 0; i < plan.length; i++) {
+      if (plan[i].travelFromPrevMin) sum += plan[i].travelFromPrevMin;
+    }
+    return sum;
   }
 
   function getQuickCourseOrder() {
@@ -3315,31 +4732,207 @@
     }
   }
 
-  function runQuickCourse() {
-    if (advancedSection) {
-      advancedSection.hidden = false;
-      advancedSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      refreshMainMapAfterShow();
-    }
-    if (mapHint) mapHint.textContent = isQuickRegionPick() ? t('mapHintPick') : t('mapHintDefault');
-    getQuickCourseCenter(function (center) {
-      if (!center) return;
-      searchCenter = { lat: center.lat, lng: center.lng };
-      if (mapAdapter) {
-        mapAdapter.setView(center.lat, center.lng, 15);
-        if (isQuickRegionPick()) {
-          mapAdapter.addPickMarker(center.lat, center.lng, center.name || t('pickHerePlan'));
-        } else {
-          mapAdapter.addUserMarker(center.lat, center.lng, center.name || t('currentLocation'));
-          mapAdapter.removePickMarker();
-        }
+  function setAdvancedDetailsOpen(open) {
+    var body = $('advancedSectionBody');
+    var btn = $('btnToggleDetails');
+    if (body) {
+      if (window.matchMedia && window.matchMedia('(min-width: 601px)').matches) {
+        body.hidden = false;
+      } else {
+        body.hidden = !open;
       }
-      fetchFourDayForecast(center.lat, center.lng);
-      doGeneratePlan(searchCenter);
+    }
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) refreshMainMapAfterShow();
+  }
+
+  function bindMobileChromeHandlers() {
+    var dockCourse = $('btnMobileDockCourse');
+    var dockResult = $('btnMobileDockResult');
+    var toggleDetails = $('btnToggleDetails');
+    if (dockCourse) {
+      dockCourse.addEventListener('click', function () {
+        openDetailedSettings();
+      });
+    }
+    if (dockResult) {
+      dockResult.addEventListener('click', function () {
+        goToMyPlansPanel();
+      });
+    }
+    if (toggleDetails) {
+      toggleDetails.addEventListener('click', function () {
+        var body = $('advancedSectionBody');
+        var open = body ? body.hidden : false;
+        setAdvancedDetailsOpen(open);
+      });
+    }
+    var closePlans = $('btnCloseMobilePlans');
+    if (closePlans) closePlans.addEventListener('click', closeMobilePlansPanel);
+    var plansPanel = $('mobilePlansPanel');
+    if (plansPanel) {
+      plansPanel.addEventListener('click', function (e) {
+        if (e.target === plansPanel) closeMobilePlansPanel();
+      });
+    }
+  }
+
+  function createPlanCardElement(item) {
+    var card = document.createElement('div');
+    card.className = 'plan-card';
+    card.setAttribute('data-plan-id', item.id);
+    card.innerHTML =
+      '<div class="plan-card-info">' +
+        '<span class="plan-card-title">' + escapeHtml(getPlanDisplayTitle(item.title)) + '</span>' +
+        '<span class="plan-card-time">' + escapeHtml((item.start || '') + ' ~ ' + (item.end || '')) + '</span>' +
+      '</div>' +
+      '<div class="plan-card-actions">' +
+        '<button type="button" class="btn btn-edit" data-action="edit" title="' + escapeHtml(t('btnEdit')) + '">' + escapeHtml(t('btnEdit')) + '</button>' +
+        '<button type="button" class="btn btn-delete" data-action="delete" title="' + escapeHtml(t('btnDelete')) + '">' + escapeHtml(t('btnDelete')) + '</button>' +
+      '</div>';
+    card.querySelector('.plan-card-info').addEventListener('click', function () {
+      showSavedPlan(item.id);
+      closeMobilePlansPanel();
+    });
+    card.querySelector('[data-action="edit"]').addEventListener('click', function (e) {
+      e.stopPropagation();
+      editSavedPlanName(item.id);
+      renderMobilePlansPanel();
+    });
+    card.querySelector('[data-action="delete"]').addEventListener('click', function (e) {
+      e.stopPropagation();
+      deleteSavedPlan(item.id);
+      renderMobilePlansPanel();
+    });
+    return card;
+  }
+
+  function renderMobilePlansPanel() {
+    var list = $('mobilePlansList');
+    var empty = $('mobilePlansEmpty');
+    if (!list || !empty) return;
+    list.innerHTML = '';
+    if (!savedPlans.length) {
+      list.hidden = true;
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+    list.hidden = false;
+    savedPlans.forEach(function (item) {
+      list.appendChild(createPlanCardElement(item));
     });
   }
 
+  function openMobilePlansPanel() {
+    var panel = $('mobilePlansPanel');
+    if (!panel) return;
+    renderMobilePlansPanel();
+    panel.hidden = false;
+    panel.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('mobile-plans-open');
+  }
+
+  function closeMobilePlansPanel() {
+    var panel = $('mobilePlansPanel');
+    if (!panel) return;
+    panel.hidden = true;
+    panel.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('mobile-plans-open');
+  }
+
+  function goToMyPlansPanel() {
+    // 모바일: 전용 계획표 UI / 데스크톱: 상세 설정의 계획표로 이동
+    if (window.matchMedia && window.matchMedia('(max-width: 600px)').matches) {
+      openMobilePlansPanel();
+      return;
+    }
+    if (advancedSection) {
+      advancedSection.hidden = false;
+      setAdvancedDetailsOpen(true);
+    }
+    var plansCard = document.querySelector('.plans-card') || $('plansArea') || $('cardPlansTitle');
+    setTimeout(function () {
+      if (plansCard) {
+        plansCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      refreshMainMapAfterShow();
+    }, 80);
+  }
+
+  function updateMobileDockForResult(hasResult) {
+    var dockResult = $('btnMobileDockResult');
+    // 내 계획표는 항상 노출
+    if (dockResult) dockResult.hidden = false;
+  }
+
+  function syncTimePresetHighlight() {
+    var group = $('timePresetGroup');
+    if (!group || !startTime || !endTime) return;
+    var key = (startTime.value || '') + '-' + (endTime.value || '');
+    var match = { '12:00-15:00': 'lunch', '17:00-21:00': 'dinner', '11:00-20:00': 'day' }[key] || '';
+    group.querySelectorAll('[data-time-preset]').forEach(function (btn) {
+      btn.classList.toggle('is-on', btn.getAttribute('data-time-preset') === match);
+    });
+  }
+
+  function bindTimePresetChips() {
+    var group = $('timePresetGroup');
+    if (!group || group.getAttribute('data-bound') === '1') return;
+    group.setAttribute('data-bound', '1');
+    var ranges = { lunch: ['12:00', '15:00'], dinner: ['17:00', '21:00'], day: ['11:00', '20:00'] };
+    group.querySelectorAll('[data-time-preset]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var range = ranges[btn.getAttribute('data-time-preset')];
+        if (!range || !startTime || !endTime) return;
+        startTime.value = range[0];
+        endTime.value = range[1];
+        syncTimePresetHighlight();
+      });
+    });
+    if (startTime) {
+      startTime.addEventListener('input', syncTimePresetHighlight);
+      startTime.addEventListener('change', syncTimePresetHighlight);
+    }
+    if (endTime) {
+      endTime.addEventListener('input', syncTimePresetHighlight);
+      endTime.addEventListener('change', syncTimePresetHighlight);
+    }
+    syncTimePresetHighlight();
+  }
+
+  function openDetailedSettings() {
+    if (advancedSection) {
+      advancedSection.hidden = false;
+      setAdvancedDetailsOpen(true);
+      refreshMainMapAfterShow();
+      setTimeout(function () {
+        advancedSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        refreshMainMapAfterShow();
+      }, 80);
+    }
+    if (mapHint) mapHint.textContent = isQuickRegionPick() ? t('mapHintPick') : t('mapHintDefault');
+  }
+
+  function runQuickCourse() {
+    // 하위 호환: 더 이상 CTA에서 쓰지 않음. 상세 설정 연 뒤 일정 만들기로 생성.
+    openDetailedSettings();
+  }
+
   function generatePlan() {
+    var pendingQuery = searchInput && searchInput.value.trim();
+    if (pendingQuery) {
+      if (advancedSection && advancedSection.hidden) {
+        advancedSection.hidden = false;
+        setAdvancedDetailsOpen(true);
+        refreshMainMapAfterShow();
+      }
+      searchPlaceQuery(pendingQuery, function (center) {
+        if (!center) return;
+        doGeneratePlan(center);
+      });
+      return;
+    }
     if (isQuickRegionPick()) {
       var center = getSearchCenter();
       if (!center) {
@@ -3355,38 +4948,43 @@
       doGeneratePlan(existing);
       return;
     }
-    if (!navigator.geolocation) {
-      showError(t('errNoGeolocation'));
-      return;
-    }
-    if (typeof window.isSecureContext === 'boolean' && !window.isSecureContext) {
-      showError(t('errLocationInsecure'));
-      return;
-    }
-    if (mapHint) mapHint.textContent = t('locationConfirming');
-    navigator.geolocation.getCurrentPosition(
-      function (pos) {
-        var center = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        searchCenter = center;
-        if (mapAdapter) {
-          mapAdapter.setView(center.lat, center.lng, 15);
-          mapAdapter.addUserMarker(center.lat, center.lng, t('currentLocation'));
-          mapAdapter.removePickMarker();
-        }
-        if (mapHint) mapHint.textContent = t('locationConfirmed') + ' (' + center.lat.toFixed(4) + ', ' + center.lng.toFixed(4) + ')';
-        doGeneratePlan(center);
-      },
-      function (err) {
-        var msg = (err && err.code === 1) ? t('errLocationPermissionDenied') : t('errLocationFailed');
-        if (mapHint) mapHint.textContent = msg;
-        showError(msg);
-      },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
-    );
+    requestLocationConsentThen(function () {
+      if (!navigator.geolocation) {
+        showError(t('errNoGeolocation'));
+        return;
+      }
+      if (typeof window.isSecureContext === 'boolean' && !window.isSecureContext) {
+        showError(t('errLocationInsecure'));
+        return;
+      }
+      if (mapHint) mapHint.textContent = t('locationConfirming');
+      navigator.geolocation.getCurrentPosition(
+        function (pos) {
+          var center = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          searchCenter = center;
+          if (mapAdapter) {
+            mapAdapter.setView(center.lat, center.lng, 15);
+            mapAdapter.addUserMarker(center.lat, center.lng, t('currentLocation'));
+            mapAdapter.removePickMarker();
+          }
+          if (mapHint) mapHint.textContent = t('locationConfirmed') + ' (' + center.lat.toFixed(4) + ', ' + center.lng.toFixed(4) + ')';
+          doGeneratePlan(center);
+        },
+        function (err) {
+          var msg = (err && err.code === 1) ? t('errLocationPermissionDenied') : t('errLocationFailed');
+          if (mapHint) mapHint.textContent = msg;
+          showError(msg);
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
+      );
+    });
   }
+
+  var planGenerating = false;
 
   function doGeneratePlan(center) {
     if (!center || !startTime || !endTime || !radiusSelect) return;
+    if (planGenerating) return;
     var start = timeToMinutes(startTime.value);
     var end = timeToMinutes(endTime.value);
     if (end <= start) {
@@ -3398,6 +4996,7 @@
       showError(t('errRadiusCustom'));
       return;
     }
+    planGenerating = true;
     if (loading) {
       showLoadingOverlay();
     }
@@ -3407,13 +5006,15 @@
       try {
         setLoadingProgress(8, 'loadingText', 'loadingSubSearch');
         startLoadingProgressDrift(8, 52, 6000);
+        overpassQuery._usedStaleCache = false;
         var elements = await overpassQuery(center, radiusMeters);
+        var usedStalePlaceCache = !!overpassQuery._usedStaleCache;
         if (loadingProgressTimer) { clearInterval(loadingProgressTimer); loadingProgressTimer = null; }
         setLoadingProgress(58, 'loadingTextBuild', 'loadingSubBuild');
         var allPlaces = parseElements(elements);
         if (allPlaces.length === 0) {
           hideLoadingOverlay();
-          showError(t('errNoPlaces'));
+          showError(t('errNoPlaces') + '\n' + t('errNoPlacesHint'));
           return;
         }
         var restaurants = allPlaces.filter(function (p) { return ['restaurant', 'fast_food', 'bar'].indexOf(p.typeKey) !== -1; });
@@ -3448,6 +5049,9 @@
         var mbtiPJ = getMbtiPJ();
         var mbtiIE = getMbtiIE();
         var effectiveCongestion = (mbtiIE === 'I') ? 'relaxed' : ((mbtiIE === 'E') ? 'busy' : getCongestionPreference());
+        var weatherThemeForPlan = getWeatherThemeForPlan();
+        var weatherIndoorBias = preferIndoorForTheme(weatherThemeForPlan);
+        var hoursSkipped = false;
         var totalMin = end - start;
         var tierForSlots = getPriceTier();
         var slotResult = computeSlotsAndDurations(typeOrder, totalMin, { generous: mbtiPJ === 'P', priceTier: tierForSlots });
@@ -3455,15 +5059,9 @@
         var slotDurations = slotResult.durations;
         var removed = slotResult.removed;
 
-        // 예상 인당 비용 계산 (선택 예산과 무관하게 항상 계산)
-        var tierCosts = getEstimatedCosts();
+        // 예상 인당 비용: 실제 고른 장소 유형·OSM 태그 기준으로 합산
+        var tier = getPriceTier();
         var estimatedCostWon = 0;
-        for (var eo = 0; eo < finalOrder.length; eo++) {
-          var key = finalOrder[eo];
-          if (tierCosts[key] != null) {
-            estimatedCostWon += tierCosts[key];
-          }
-        }
         var plan = [];
         var used = new Set();
         var substituted = [];
@@ -3471,48 +5069,109 @@
         var typeToPoolIndex = { restaurant: 0, cafe: 1, activity: 2, park: 3 };
         var slotTypeLabelKeys = { restaurant: 'courseTypeRestaurant', cafe: 'courseTypeCafe', activity: 'courseTypeActivity', park: 'courseTypePark' };
         var tMin = start;
-        var tier = getPriceTier();
+
+        // 슬롯별 후보 상위권에 OSM+네이버 인기도 신호 보강 (최대 12곳)
+        var shortlistForCongestion = [];
+        for (var si = 0; si < finalOrder.length; si++) {
+          var sType = finalOrder[si];
+          var sIdx = typeToPoolIndex[sType] !== undefined ? typeToPoolIndex[sType] : 0;
+          var sPool = pools[sIdx] && pools[sIdx].length ? pools[sIdx] : allPlaces;
+          var sSorted = sortPoolByWeather(sortPoolByPriceTier(sPool, sType, tier), weatherThemeForPlan);
+          shortlistForCongestion = shortlistForCongestion.concat(sSorted.slice(0, 8));
+        }
+        var seenNames = {};
+        shortlistForCongestion = shortlistForCongestion.filter(function (p) {
+          if (!p || !p.name || seenNames[p.name]) return false;
+          seenNames[p.name] = true;
+          return true;
+        });
+        await enrichPlacesCongestionWithNaver(shortlistForCongestion, 12);
+
+        var usedPrefixes = {};
+        var usedStreets = {};
+        var usedGrids = {};
+        var usedSlots = {};
+        var usedNames = [];
+        var usedFallbackPlan = false;
+        var routeOptimized = false;
+        var transportProfile = getTransportProfile();
         for (var i = 0; i < finalOrder.length; i++) {
           var slotType = finalOrder[i];
-          var poolIdx = typeToPoolIndex[slotType] !== undefined ? typeToPoolIndex[slotType] : 0;
-          var pool = pools[poolIdx] && pools[poolIdx].length ? pools[poolIdx] : allPlaces;
-          var sortedPool = sortPoolByPriceTier(pool, slotType, tier);
-          var available = sortedPool.filter(function (p) {
-            return !used.has(p.name) &&
-              !isBadPlaceName(p.name) &&
-              !isOsmPlaceClosed(p.tags) &&
-              !isOsmLowRated(p.tags) &&
-              congestionMatchesPreference(getCongestion(p).level, effectiveCongestion);
-          });
-          if (available.length === 0) {
-            congestionFallback = true;
-            available = sortedPool.filter(function (p) {
-              return !used.has(p.name) && !isBadPlaceName(p.name) && !isOsmPlaceClosed(p.tags) && !isOsmLowRated(p.tags);
+          var dur = slotDurations[i] || 90;
+          if (finalOrder[i] === 'restaurant') {
+            var baseMaxPre = (mbtiPJ === 'P') ? 120 : 90;
+            var hardMaxPre = (tier === 'expensive' && mbtiPJ === 'P') ? 150 : baseMaxPre;
+            if (dur > hardMaxPre) dur = hardMaxPre;
+          }
+          var slotEnd = tMin + dur;
+          var scoreCtx = {
+            tier: tier,
+            theme: weatherThemeForPlan,
+            prev: plan.length ? plan[plan.length - 1] : null,
+            center: { lat: center.lat, lon: center.lng != null ? center.lng : center.lon },
+            radiusMeters: radiusMeters,
+            usedPrefixes: usedPrefixes,
+            usedStreets: usedStreets,
+            usedGrids: usedGrids,
+            usedSlots: usedSlots,
+            usedNames: usedNames,
+            transportProfile: transportProfile
+          };
+          function filterAvailable(list, useCongestion, requireHours) {
+            return list.filter(function (p) {
+              if (used.has(p.name) || isWeakPlaceCandidate(p)) return false;
+              if (requireHours !== false && !isOpenDuringSlot(p.tags, tMin, slotEnd)) return false;
+              if (useCongestion && !congestionMatchesPreference(getCongestion(p).level, effectiveCongestion)) return false;
+              return true;
             });
           }
-          if (available.length === 0) {
-            available = shuffle(allPlaces).filter(function (p) {
-              return !used.has(p.name) && !isBadPlaceName(p.name) && !isOsmPlaceClosed(p.tags) && !isOsmLowRated(p.tags);
-            });
+          var prevType = plan.length ? placeSlotType(plan[plan.length - 1]) : null;
+          var typeTryOrder = slotTypesAvoiding(prevType, i, slotType !== prevType ? slotType : null);
+          var available = [];
+          for (var ti = 0; ti < typeTryOrder.length && !available.length; ti++) {
+            var tryIdx = typeToPoolIndex[typeTryOrder[ti]];
+            var tryPool = pools[tryIdx] && pools[tryIdx].length ? pools[tryIdx] : [];
+            if (!tryPool.length) continue;
+            var trySorted = sortPoolByWeather(sortPoolByPriceTier(tryPool, typeTryOrder[ti], tier), weatherThemeForPlan);
+            var tryList = rankCandidates(filterAvailable(trySorted, true, true), scoreCtx);
+            if (!tryList.length) {
+              congestionFallback = true;
+              tryList = rankCandidates(filterAvailable(trySorted, false, true), scoreCtx);
+            }
+            available = tryList;
           }
-          if (plan.length > 0 && available.length > 1) {
-            var prevSlotType = getPoolIndexAndSlotType(plan[plan.length - 1].typeKey).slotTypeKey;
-            var otherType = available.filter(function (p) {
-              return getPoolIndexAndSlotType(p.typeKey || 'restaurant').slotTypeKey !== prevSlotType;
-            });
-            if (otherType.length) available = otherType;
+          if (!available.length) {
+            usedFallbackPlan = true;
+            hoursSkipped = true;
+            available = excludePreviousCategory(rankCandidates(filterAvailable(allPlaces, false, false), scoreCtx), prevType);
           }
-          var pick = available[0] || shuffle(allPlaces).find(function (p) {
-            return !used.has(p.name) && !isBadPlaceName(p.name) && !isOsmPlaceClosed(p.tags) && !isOsmLowRated(p.tags);
-          });
-          if (!pick) break;
+          if (!available.length) continue;
+          available = preferFreshCandidates(available);
+          // 같은 길·격자 몰림이면 2순위 후보 선호
+          if (available.length > 1) {
+            var spread = available.filter(function (p) {
+              var sk = streetKeyOf(p);
+              var gk = gridKeyOf(p);
+              if (sk && usedStreets[sk]) return false;
+              if (gk && usedGrids[gk]) return false;
+              return true;
+            });
+            if (spread.length) available = spread;
+          }
+          var pick = available[0] || null;
+          if (!pick) continue;
           used.add(pick.name);
+          usedPrefixes[namePrefixKey(pick.name)] = true;
+          usedNames.push(pick.name);
+          var skPick = streetKeyOf(pick);
+          var gkPick = gridKeyOf(pick);
+          if (skPick) usedStreets[skPick] = true;
+          if (gkPick) usedGrids[gkPick] = true;
           var pickSlotType = getPoolIndexAndSlotType(pick.typeKey || 'restaurant').slotTypeKey;
+          usedSlots[pickSlotType] = (usedSlots[pickSlotType] || 0) + 1;
           if (pickSlotType !== slotType) {
             substituted.push({ wanted: slotType, got: pickSlotType });
           }
-          var dur = slotDurations[i] || 90;
-          // 식당 시간은 하드 캡: 기본 90분, P=120분, 비쌈+P일 때만 최대 150분
           if (finalOrder[i] === 'restaurant' || (pick.typeKey || 'place') === 'restaurant') {
             var baseMax = (mbtiPJ === 'P') ? 120 : 90;
             var hardMax = (tier === 'expensive' && mbtiPJ === 'P') ? 150 : baseMax;
@@ -3520,6 +5179,13 @@
           }
           var endT = tMin + dur;
           var congestion = getCongestion(pick);
+          var placeCost = estimatePlaceCostWon(pick, tier);
+          var whyBits = [];
+          if (pick.tags && pick.tags.opening_hours) whyBits.push(t('placeWhyOpen'));
+          if (plan.length && haversineMeters(plan[plan.length - 1], pick) < 900) whyBits.push(t('placeWhyNear'));
+          if (inferPlacePriceTier(pick) === tier || congestionMatchesPreference(congestion.level, effectiveCongestion)) {
+            whyBits.push(t('placeWhyMatch'));
+          }
           plan.push({
             name: pick.name,
             type: pick.type,
@@ -3531,9 +5197,38 @@
             timeStart: minutesToTime(tMin),
             timeEnd: minutesToTime(endT),
             congestion: congestion,
+            estimatedCostWon: placeCost,
+            pickWhy: whyBits.slice(0, 2)
           });
           tMin = endT;
         }
+
+        if (!plan.length || plan.length < Math.max(1, Math.ceil(finalOrder.length / 2))) {
+          var emergency = buildEmergencyFallbackPlan({
+            allPlaces: allPlaces,
+            pools: pools,
+            start: start,
+            end: end,
+            tier: tier,
+            center: { lat: center.lat, lon: center.lng != null ? center.lng : center.lon },
+            radiusMeters: radiusMeters,
+            theme: weatherThemeForPlan,
+            finalOrder: finalOrder.length ? finalOrder : ['restaurant', 'cafe', 'activity'],
+            slotDurations: slotDurations,
+            transportProfile: transportProfile
+          });
+          if (emergency.plan && emergency.plan.length && emergency.plan.length > plan.length) {
+            plan = emergency.plan;
+            substituted = substituted.concat(emergency.substituted || []);
+            usedFallbackPlan = true;
+          } else if (emergency.plan && emergency.plan.length && !plan.length) {
+            plan = emergency.plan;
+            substituted = substituted.concat(emergency.substituted || []);
+            usedFallbackPlan = true;
+          }
+        }
+
+        estimatedCostWon = sumPlanEstimatedCost(plan, tier);
 
         setLoadingProgress(72, 'loadingTextBuild', 'loadingSubBuild');
 
@@ -3547,7 +5242,7 @@
             partialPlan: true,
             mbtiPJ: mbtiPJ,
           });
-          showError(t('errPlanEmpty') + (failReasons.length ? '\n\n' + failReasons.join('\n') : ''));
+          showError(t('errPlanEmpty') + '\n' + t('errPlanEmptyHint') + (failReasons.length ? '\n\n' + failReasons.join('\n') : ''));
           return;
         }
 
@@ -3556,15 +5251,57 @@
           startLoadingProgressDrift(78, 92, 3500);
           plan = await ensurePlanPlaceQuality(plan, pools, allPlaces, tier, effectiveCongestion);
           if (!plan.length) {
-            showError(t('errPlanEmpty') + '\n\n' + t('reasonMissingTypes'));
-            return;
+            var emergency2 = buildEmergencyFallbackPlan({
+              allPlaces: allPlaces,
+              pools: pools,
+              start: start,
+              end: end,
+              tier: tier,
+              center: { lat: center.lat, lon: center.lng != null ? center.lng : center.lon },
+              radiusMeters: radiusMeters,
+              theme: weatherThemeForPlan,
+              finalOrder: finalOrder,
+              slotDurations: slotDurations,
+              transportProfile: transportProfile
+            });
+            if (emergency2.plan && emergency2.plan.length) {
+              plan = emergency2.plan;
+              usedFallbackPlan = true;
+            } else {
+              showError(t('errPlanEmpty') + '\n' + t('errPlanEmptyHint') + '\n\n' + t('reasonMissingTypes'));
+              return;
+            }
           }
           plan = await enrichPlanWithNaverCongestion(plan);
         }
+
+        var travelResult = await applyTravelTimesToPlan(plan, start, end);
+        plan = travelResult.plan;
+
+        // 도보·3곳 이상이면 동선 한 번 더 다듬기 (무료 OSRM)
+        var transportVal = (document.querySelector('input[name="transport"]:checked') || {}).value || 'walk';
+        if (plan.length >= 3 && transportVal !== 'transit') {
+          try {
+            var optimized = await optimizeRouteOrder(plan);
+            var travel2 = await applyTravelTimesToPlan(optimized, start, end);
+            plan = travel2.plan;
+            travelResult = travel2;
+            routeOptimized = true;
+          } catch (optErr) { /* keep previous */ }
+        }
+
+        estimatedCostWon = sumPlanEstimatedCost(plan, tier);
+        var travelTotal = totalTravelMinutes(plan);
+
         if (loadingProgressTimer) { clearInterval(loadingProgressTimer); loadingProgressTimer = null; }
         setLoadingProgress(96, 'loadingTextFinish', 'loadingSubFinish');
         var timeNotice = buildTimeShortageMessage(removed);
         if (budgetExcluded) timeNotice = (timeNotice ? timeNotice + ' ' : '') + t('budgetExceeded');
+        if (travelResult.overrun) timeNotice = (timeNotice ? timeNotice + ' ' : '') + t('travelOverrunNotice');
+        if (weatherIndoorBias) timeNotice = (timeNotice ? timeNotice + ' ' : '') + t('weatherIndoorBias');
+        if (hoursSkipped) timeNotice = (timeNotice ? timeNotice + ' ' : '') + t('reasonHoursRelaxed');
+        if (usedFallbackPlan) timeNotice = (timeNotice ? timeNotice + ' ' : '') + t('whyFallback');
+        if (usedStalePlaceCache) timeNotice = (timeNotice ? timeNotice + ' ' : '') + t('errPlacesStaleCache');
         if (substituted && substituted.length > 0) {
           var subLines = substituted.map(function (s) {
             var wantLabel = t(slotTypeLabelKeys[s.wanted] || '');
@@ -3588,60 +5325,242 @@
           timeNotice = (timeNotice ? timeNotice + '\n' : '') + issueReasons.join(' ');
         }
 
-        renderPlan(plan, center, radiusMeters, startTime.value, endTime.value, timeNotice, estimatedCostWon, budget, pools, mbtiPJ, mbtiIE);
+        var streetKeysSeen = {};
+        for (var ssi = 0; ssi < plan.length; ssi++) {
+          var ssk = streetKeyOf(plan[ssi]);
+          if (ssk) streetKeysSeen[ssk] = true;
+        }
+        var streetSpread = Object.keys(streetKeysSeen).length >= Math.min(2, plan.length);
+        var whyItems = buildPlanWhyItems({
+          weatherIndoorBias: weatherIndoorBias,
+          weatherOutdoorBias: !weatherIndoorBias && weatherThemeForPlan === 'fine',
+          totalTravelMin: travelTotal,
+          congestionPref: effectiveCongestion,
+          budgetUsed: budget != null && budget > 0,
+          diversified: plan.length >= 2,
+          hoursRelaxed: hoursSkipped,
+          hoursFiltered: !hoursSkipped,
+          usedFallback: usedFallbackPlan,
+          routeOptimized: routeOptimized,
+          streetSpread: streetSpread
+        });
+
+        renderPlan(plan, center, radiusMeters, startTime.value, endTime.value, timeNotice, estimatedCostWon, budget, pools, mbtiPJ, mbtiIE, {
+          whyItems: whyItems,
+          travelTotal: travelTotal
+        });
+        updateMobileDockForResult(true);
         if (resultSection) {
           resultSection.hidden = false;
           resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
         addPlanToPlansArea(plan, center, radiusMeters, startTime.value, endTime.value, timeNotice, estimatedCostWon, budget, mbtiPJ, mbtiIE);
         scheduleCardShareReminder(startTime.value, endTime.value);
-
-        // 요청과 다르게 짜인 경우 원인 알림
-        if (issueReasons.length) {
-          showPlanIssues(issueReasons);
-        }
       } catch (e) {
         console.error(e);
         var msg = (e && e.message && String(e.message).indexOf('장소') !== -1)
-          ? t('errPlacesSearchFailed')
-          : t('errGenerate');
+          ? (t('errPlacesSearchFailed') + '\n' + t('errGenerateHint'))
+          : (t('errGenerate') + '\n' + t('errGenerateHint'));
         showError(msg);
       } finally {
+        planGenerating = false;
         hideLoadingOverlay();
       }
     })();
   }
 
-  function replacePlanItem(index) {
-    var lr = lastRenderedPlan;
-    if (!lr || !lr.plan || !lr.pools || index < 0 || index >= lr.plan.length) return;
-    var plan = lr.plan.slice();
-    var item = plan[index];
-    var typeKey = item.typeKey || 'restaurant';
-    var _a = getPoolIndexAndSlotType(typeKey);
-    var poolIndex = _a.poolIndex;
-    var slotTypeKey = _a.slotTypeKey;
-    var pool = lr.pools[poolIndex];
-    if (!pool || pool.length === 0) {
-      showError(t('errNoOtherPlace'));
-      return;
-    }
-    var used = new Set(plan.map(function (p) { return p.name; }));
-    var mbtiIE = (lr.mbtiIE != null) ? lr.mbtiIE : '';
-    var effectiveCongestion = (mbtiIE === 'I') ? 'relaxed' : ((mbtiIE === 'E') ? 'busy' : getCongestionPreference());
-    var available = pool.filter(function (p) {
-      return !used.has(p.name) && congestionMatchesPreference(getCongestion(p).level, effectiveCongestion);
+  var replacePlanSeq = 0;
+  var RECENT_REGIONS_KEY = 'auvia-recent-regions';
+
+  function snapshotPlace(item) {
+    if (!item) return null;
+    return {
+      name: item.name,
+      type: item.type,
+      typeKey: item.typeKey,
+      lat: item.lat,
+      lon: item.lon,
+      addr: item.addr,
+      tags: item.tags,
+      timeStart: item.timeStart,
+      timeEnd: item.timeEnd,
+      congestion: item.congestion,
+      estimatedCostWon: item.estimatedCostWon,
+      pickWhy: item.pickWhy ? item.pickWhy.slice() : null,
+      travelFromPrevMin: item.travelFromPrevMin,
+      pinned: !!item.pinned,
+      highlight: !!item.highlight,
+      requestedSlot: item.requestedSlot || null
+    };
+  }
+
+  function rememberRegion(lat, lng, label) {
+    lat = Number(lat);
+    lng = Number(lng);
+    if (isNaN(lat) || isNaN(lng)) return;
+    var text = String(label || '').replace(/\s+/g, ' ').trim();
+    if (text.length > 18) text = text.slice(0, 17) + '…';
+    if (!text) text = lat.toFixed(2) + ', ' + lng.toFixed(2);
+    var list = [];
+    try { list = JSON.parse(localStorage.getItem(RECENT_REGIONS_KEY) || '[]') || []; } catch (e) { list = []; }
+    list = list.filter(function (r) {
+      return Math.abs(Number(r.lat) - lat) > 0.004 || Math.abs(Number(r.lng) - lng) > 0.004;
     });
-    if (available.length === 0) available = pool.filter(function (p) { return !used.has(p.name); });
-    if (available.length === 0) {
-      showError(t('errNoOtherPlace'));
+    list.unshift({ lat: lat, lng: lng, label: text });
+    list = list.slice(0, 3);
+    try { localStorage.setItem(RECENT_REGIONS_KEY, JSON.stringify(list)); } catch (e2) {}
+    renderRecentRegions();
+  }
+
+  function renderRecentRegions() {
+    var wrap = $('recentRegions');
+    if (!wrap) return;
+    var list = [];
+    try { list = JSON.parse(localStorage.getItem(RECENT_REGIONS_KEY) || '[]') || []; } catch (e) { list = []; }
+    if (!list.length) {
+      wrap.hidden = true;
+      wrap.innerHTML = '';
       return;
     }
+    wrap.hidden = false;
+    wrap.innerHTML = '<span class="recent-regions-label">' + escapeHtml(t('recentRegionsLabel')) + '</span>' +
+      list.map(function (r, i) {
+        return '<button type="button" class="recent-region-chip" data-recent-index="' + i + '">' + escapeHtml(r.label || '') + '</button>';
+      }).join('');
+    wrap.querySelectorAll('.recent-region-chip').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var i = parseInt(btn.getAttribute('data-recent-index'), 10);
+        var r = list[i];
+        if (!r) return;
+        var pick = document.querySelector('input[name="quickRegion"][value="pick"]');
+        if (pick) pick.checked = true;
+        searchCenter = { lat: Number(r.lat), lng: Number(r.lng) };
+        if (mapAdapter) {
+          mapAdapter.setView(searchCenter.lat, searchCenter.lng, 15);
+          mapAdapter.addPickMarker(searchCenter.lat, searchCenter.lng, r.label || t('recentPickedHere'));
+        }
+        if (mapHint) mapHint.textContent = t('mapHintPick');
+        fetchFourDayForecast(searchCenter.lat, searchCenter.lng);
+        openDetailedSettings();
+      });
+    });
+  }
+
+  function syncCurrentSavedPlan() {
+    if (!lastRenderedPlan || lastRenderedPlan.id == null) return;
+    var item = savedPlans.find(function (p) { return p.id === lastRenderedPlan.id; });
+    if (!item) return;
+    item.plan = lastRenderedPlan.plan.map(function (p) {
+      var copy = snapshotPlace(p) || {};
+      return copy;
+    });
+    item.estimatedCostWon = lastRenderedPlan.estimatedCostWon;
+    item.timeNotice = lastRenderedPlan.timeNotice;
+    persistSavedPlansLocal();
+    upsertPlanCloud(item);
+  }
+
+  function finishEditedPlan(plan, extraNotice) {
+    var lr = lastRenderedPlan;
     var tier = getPriceTier();
-    var sorted = sortPoolByPriceTier(available, slotTypeKey, tier);
-    var pick = sorted[Math.floor(Math.random() * sorted.length)] || sorted[0];
+    var dayStart = timeToMinutes((lr && lr.start) || '12:00');
+    var dayEnd = timeToMinutes((lr && lr.end) || '18:00');
+    var seq = ++replacePlanSeq;
+    lastRenderedPlan.plan = plan;
+    lastRenderedPlan.estimatedCostWon = sumPlanEstimatedCost(plan, tier);
+    applyTravelTimesToPlan(plan, dayStart, dayEnd).then(function (result) {
+      if (seq !== replacePlanSeq) return;
+      var nextPlan = result.plan;
+      var notice = (lr && lr.timeNotice) || '';
+      if (extraNotice) notice = (notice ? notice + ' ' : '') + extraNotice;
+      if (result.overrun) notice = (notice ? notice + ' ' : '') + t('travelOverrunNotice');
+      lastRenderedPlan.plan = nextPlan;
+      lastRenderedPlan.timeNotice = notice;
+      lastRenderedPlan.estimatedCostWon = sumPlanEstimatedCost(nextPlan, tier);
+      lastRenderedPlan.travelTotal = totalTravelMinutes(nextPlan);
+      renderPlan(nextPlan, lr.center, lr.radiusMeters, lr.start, lr.end, notice, lastRenderedPlan.estimatedCostWon, lr.budgetWon, lr.pools, lr.mbtiPJ || '', lr.mbtiIE || '', {
+        whyItems: lastRenderedPlan.whyItems || null,
+        travelTotal: lastRenderedPlan.travelTotal
+      });
+      syncCurrentSavedPlan();
+    }).catch(function () {
+      if (seq !== replacePlanSeq) return;
+      renderPlan(plan, lr.center, lr.radiusMeters, lr.start, lr.end, lr.timeNotice, lastRenderedPlan.estimatedCostWon, lr.budgetWon, lr.pools, lr.mbtiPJ || '', lr.mbtiIE || '', {
+        whyItems: lastRenderedPlan.whyItems || null,
+        travelTotal: totalTravelMinutes(plan)
+      });
+    });
+  }
+
+  function buildReplacementAt(plan, index) {
+    var lr = lastRenderedPlan;
+    var item = plan[index];
+    if (!lr || !item || !lr.pools) return null;
+    var typeKey = item.typeKey || 'restaurant';
+    var slot = getPoolIndexAndSlotType(typeKey);
+    var used = new Set(plan.map(function (p, i) { return i === index ? '' : p.name; }));
+    var mbtiIE = lr.mbtiIE || '';
+    var effectiveCongestion = (mbtiIE === 'I') ? 'relaxed' : ((mbtiIE === 'E') ? 'busy' : getCongestionPreference());
+    var prevType = index > 0 ? placeSlotType(plan[index - 1]) : null;
+    var nextType = index + 1 < plan.length ? placeSlotType(plan[index + 1]) : null;
+    var forcedSlot = item.requestedSlot || null;
+    var ownType = forcedSlot || slot.slotTypeKey;
+    var typeOrder = forcedSlot
+      ? [forcedSlot]
+      : slotTypesAvoiding(prevType, index, ownType !== prevType ? ownType : null);
+    if (!forcedSlot && nextType && nextType !== prevType) {
+      var later = typeOrder.filter(function (typeName) { return typeName === nextType; });
+      typeOrder = typeOrder.filter(function (typeName) { return typeName !== nextType; }).concat(later);
+    }
+    var poolIndexByType = { restaurant: 0, cafe: 1, activity: 2, park: 3 };
+    var available = [];
+    for (var ti = 0; ti < typeOrder.length && !available.length; ti++) {
+      var pool = lr.pools[poolIndexByType[typeOrder[ti]]] || [];
+      var filtered = pool.filter(function (p) {
+        return p && p.name !== item.name && !used.has(p.name) && !isWeakPlaceCandidate(p) && (forcedSlot || !prevType || placeSlotType(p) !== prevType);
+      });
+      var matched = filtered.filter(function (p) {
+        return congestionMatchesPreference(getCongestion(p).level, effectiveCongestion);
+      });
+      available = matched.length ? matched : filtered;
+    }
+    if (!available.length) return null;
+    var tier = getPriceTier();
+    var prev = index > 0 ? plan[index - 1] : null;
+    var usedPrefixes = {};
+    var usedStreets = {};
+    var usedGrids = {};
+    var usedNames = [];
+    plan.forEach(function (p, i) {
+      if (i === index) return;
+      usedPrefixes[namePrefixKey(p.name)] = true;
+      usedNames.push(p.name);
+      var sk = streetKeyOf(p);
+      var gk = gridKeyOf(p);
+      if (sk) usedStreets[sk] = true;
+      if (gk) usedGrids[gk] = true;
+    });
+    var sorted = rankCandidates(sortPoolByPriceTier(available, placeSlotType(available[0]) || slot.slotTypeKey, tier), {
+      tier: tier,
+      theme: null,
+      prev: prev,
+      center: lr.center ? { lat: lr.center.lat, lon: lr.center.lng != null ? lr.center.lng : lr.center.lon } : null,
+      radiusMeters: lr.radiusMeters || 1500,
+      usedPrefixes: usedPrefixes,
+      usedStreets: usedStreets,
+      usedGrids: usedGrids,
+      usedNames: usedNames,
+      transportProfile: getTransportProfile()
+    });
+    sorted = preferFreshCandidates(sorted);
+    var pick = sorted[0];
+    if (!pick) return null;
     var congestion = getCongestion(pick);
-    plan[index] = {
+    var whyBits = [];
+    if (pick.tags && pick.tags.opening_hours) whyBits.push(t('placeWhyOpen'));
+    if (prev && haversineMeters(prev, pick) < 900) whyBits.push(t('placeWhyNear'));
+    if (inferPlacePriceTier(pick) === tier || congestionMatchesPreference(congestion.level, effectiveCongestion)) whyBits.push(t('placeWhyMatch'));
+    return {
       name: pick.name,
       type: pick.type,
       typeKey: pick.typeKey || 'place',
@@ -3652,12 +5571,93 @@
       timeStart: item.timeStart,
       timeEnd: item.timeEnd,
       congestion: congestion,
+      estimatedCostWon: estimatePlaceCostWon(pick, tier),
+      pickWhy: whyBits.slice(0, 2),
+      undoPlace: snapshotPlace(item),
+      pinned: !!item.pinned,
+      requestedSlot: item.requestedSlot || placeSlotType(pick)
     };
-    lastRenderedPlan.plan = plan;
-    renderPlan(plan, lr.center, lr.radiusMeters, lr.start, lr.end, lr.timeNotice, lr.estimatedCostWon, lr.budgetWon, lr.pools, lr.mbtiPJ || '', lr.mbtiIE || '');
   }
 
-  function renderPlan(plan, center, radiusMeters, start, end, timeNotice, estimatedCostWon, budgetWon, pools, mbtiPJ, mbtiIE) {
+  function replacePlanItem(index) {
+    var lr = lastRenderedPlan;
+    if (!lr || !lr.plan || !lr.pools || index < 0 || index >= lr.plan.length) return;
+    var plan = lr.plan.slice();
+    var next = buildReplacementAt(plan, index);
+    if (!next) {
+      showError(t('errNoOtherPlace'));
+      return;
+    }
+    next.pinned = !!plan[index].pinned;
+    plan[index] = next;
+    finishEditedPlan(plan);
+  }
+
+  function undoPlanItem(index) {
+    var lr = lastRenderedPlan;
+    if (!lr || !lr.plan || !lr.plan[index] || !lr.plan[index].undoPlace) return;
+    var plan = lr.plan.slice();
+    plan[index] = lr.plan[index].undoPlace;
+    finishEditedPlan(plan);
+  }
+
+  function togglePinPlanItem(index) {
+    var lr = lastRenderedPlan;
+    if (!lr || !lr.plan || !lr.plan[index]) return;
+    lr.plan[index].pinned = !lr.plan[index].pinned;
+    renderPlan(lr.plan, lr.center, lr.radiusMeters, lr.start, lr.end, lr.timeNotice, lr.estimatedCostWon, lr.budgetWon, lr.pools, lr.mbtiPJ || '', lr.mbtiIE || '', {
+      whyItems: lr.whyItems || null,
+      travelTotal: lr.travelTotal
+    });
+    syncCurrentSavedPlan();
+  }
+
+  function setPlanItemSlot(index, slotType) {
+    var lr = lastRenderedPlan;
+    if (!lr || !lr.plan || !lr.plan[index]) return;
+    if (['restaurant', 'cafe', 'activity', 'park'].indexOf(slotType) === -1) return;
+    lr.plan[index].requestedSlot = slotType;
+    renderPlan(lr.plan, lr.center, lr.radiusMeters, lr.start, lr.end, lr.timeNotice, lr.estimatedCostWon, lr.budgetWon, lr.pools, lr.mbtiPJ || '', lr.mbtiIE || '', {
+      whyItems: lr.whyItems || null,
+      travelTotal: lr.travelTotal
+    });
+    syncCurrentSavedPlan();
+  }
+
+  function regenerateSameCourse() {
+    var lr = lastRenderedPlan;
+    if (!lr || !lr.plan || !lr.plan.length) return;
+    if (lr.pools) {
+      var plan = lr.plan.slice();
+      var changed = 0;
+      for (var i = 0; i < plan.length; i++) {
+        if (plan[i] && plan[i].pinned && !(plan[i].requestedSlot && plan[i].requestedSlot !== placeSlotType(plan[i]))) continue;
+        var next = buildReplacementAt(plan, i);
+        if (!next) continue;
+        plan[i] = next;
+        changed += 1;
+      }
+      if (!changed) {
+        showError(t('errNoOtherPlace'));
+        return;
+      }
+      finishEditedPlan(plan, null);
+      return;
+    }
+    var c = lr.center;
+    if (!c || c.lat == null) {
+      showError(t('errRegenNoCenter'));
+      return;
+    }
+    doGeneratePlan({ lat: Number(c.lat), lng: c.lng != null ? Number(c.lng) : Number(c.lon) });
+  }
+
+  function renderPlan(plan, center, radiusMeters, start, end, timeNotice, estimatedCostWon, budgetWon, pools, mbtiPJ, mbtiIE, opts) {
+    opts = opts || {};
+    var prevWhy = lastRenderedPlan && lastRenderedPlan.whyItems;
+    var prevTravel = lastRenderedPlan && lastRenderedPlan.travelTotal;
+    var prevId = lastRenderedPlan && lastRenderedPlan.id;
+    var prevTitle = lastRenderedPlan && lastRenderedPlan.title;
     lastRenderedPlan = {
       plan: plan,
       center: center,
@@ -3670,7 +5670,12 @@
       pools: pools || null,
       mbtiPJ: mbtiPJ || '',
       mbtiIE: mbtiIE || '',
+      whyItems: ('whyItems' in opts) ? opts.whyItems : (prevWhy || null),
+      travelTotal: opts.travelTotal != null ? opts.travelTotal : (prevTravel != null ? prevTravel : totalTravelMinutes(plan)),
     };
+    if (prevId != null) lastRenderedPlan.id = prevId;
+    if (prevTitle) lastRenderedPlan.title = prevTitle;
+    rememberPlanNames(plan);
     var isPick = isQuickRegionPick();
     var suffixKey = isPick && currentLang === 'en' ? 'resultMetaSuffixPick' : 'resultMetaSuffix';
     resultMeta.textContent = (isPick ? t('resultMetaPick') : t('resultMetaMy')) + (radiusMeters / 1000) + t(suffixKey) + start + ' ~ ' + end;
@@ -3734,6 +5739,39 @@
         if (disclaimerEl) disclaimerEl.hidden = true;
       }
     }
+
+    var summaryEl = $('resultSummary');
+    if (summaryEl) {
+      var chips = [];
+      chips.push('<span class="result-summary-chip">' + escapeHtml(t('summaryStops').replace('%s', String(plan.length))) + '</span>');
+      var travelTot = lastRenderedPlan.travelTotal || 0;
+      if (travelTot > 0) {
+        chips.push('<span class="result-summary-chip">' + escapeHtml(t('summaryTravel').replace('%s', String(travelTot))) + '</span>');
+      }
+      if (estimatedCostWon != null && estimatedCostWon > 0) {
+        chips.push('<span class="result-summary-chip">' + escapeHtml(t('summaryCost').replace('%s', formatWon(estimatedCostWon))) + '</span>');
+      }
+      if (budgetWon != null && budgetWon > 0 && estimatedCostWon != null && estimatedCostWon > 0) {
+        var pct = Math.round((estimatedCostWon / budgetWon) * 100);
+        chips.push('<span class="result-summary-chip result-summary-chip--budget">' + escapeHtml(t('summaryBudgetFit').replace('%s', String(pct))) + '</span>');
+      }
+      summaryEl.innerHTML = chips.join('');
+      summaryEl.hidden = plan.length === 0;
+    }
+
+    var whyEl = $('resultWhy');
+    if (whyEl) {
+      var whyItems = lastRenderedPlan.whyItems || [];
+      if (whyItems.length && plan.length) {
+        whyEl.innerHTML = '<li class="result-why-title">' + escapeHtml(t('whyTitle')) + '</li>' +
+          whyItems.map(function (w) { return '<li>' + escapeHtml(w) + '</li>'; }).join('');
+        whyEl.hidden = false;
+      } else {
+        whyEl.innerHTML = '';
+        whyEl.hidden = true;
+      }
+    }
+
     var placeDisclaimerEl = $('resultPlaceDisclaimer');
     if (placeDisclaimerEl) {
       placeDisclaimerEl.textContent = t('placeDataDisclaimer');
@@ -3742,26 +5780,49 @@
     itinerary.innerHTML = plan.map(function (p, idx) {
       var highlightStar = p.highlight ? '<span class="place-highlight" aria-label="' + escapeHtml(t('placeHighlightLabel') || '인생샷·분위기·데이트 추천') + '">⭐</span> ' : '';
       var congestionHtml = p.congestion ? '<span class="congestion ' + p.congestion.level + '">' + escapeHtml(t(p.congestion.labelKey)) + '</span>' : '';
-      var searchQuery = (p.name || '') + (p.addr ? ' ' + p.addr : '');
-      var lat = p.lat != null ? Number(p.lat) : null;
-      var lon = p.lon != null ? Number(p.lon) : null;
-      var mapUrl;
-      if (currentLang === 'ko') {
-        mapUrl = 'https://map.naver.com/v5/search/' + encodeURIComponent(searchQuery.trim() || p.name || '');
-      } else {
-        if (lat != null && lon != null && !isNaN(lat) && !isNaN(lon)) {
-          mapUrl = 'https://www.google.com/maps?q=' + lat + ',' + lon;
-        } else {
-          mapUrl = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(searchQuery || p.name);
-        }
-      }
-      var verifyLink = '<a href="' + escapeHtml(mapUrl) + '" target="_blank" rel="noopener noreferrer" class="place-verify-link">' + escapeHtml(t('placeVerifyMap')) + '</a>';
+      var links = buildPlaceDeepLinks(p);
+      var verifyLink = '<a href="' + escapeHtml(links.map) + '" target="_blank" rel="noopener noreferrer" class="place-verify-link">' + escapeHtml(t('placeVerifyMap')) + '</a>';
+      var reserveLink = '<a href="' + escapeHtml(links.reserve) + '" target="_blank" rel="noopener noreferrer" class="place-reserve-link">' + escapeHtml(t('placeReserveLink')) + '</a>';
+      var menuLink = '<a href="' + escapeHtml(links.menu) + '" target="_blank" rel="noopener noreferrer" class="place-menu-link">' + escapeHtml(t('placeMenuLink')) + '</a>';
+      var slotKey = p.requestedSlot || placeSlotType(p);
+      var slotSelect = pools ? '<select class="place-slot-select" data-index="' + idx + '" aria-label="' + escapeHtml(t('placeSlotLabel')) + '">' +
+        ['restaurant', 'cafe', 'activity', 'park'].map(function (key) {
+          var labelKey = key === 'restaurant' ? 'courseTypeRestaurant' : key === 'cafe' ? 'courseTypeCafe' : key === 'activity' ? 'courseTypeActivity' : 'courseTypePark';
+          return '<option value="' + key + '"' + (key === slotKey ? ' selected' : '') + '>' + escapeHtml(t(labelKey)) + '</option>';
+        }).join('') + '</select>' : '';
+      var pinBtn = pools ? '<button type="button" class="place-pin-btn' + (p.pinned ? ' is-on' : '') + '" data-index="' + idx + '">' + escapeHtml(p.pinned ? t('placeUnpin') : t('placePin')) + '</button>' : '';
+      var undoBtn = p.undoPlace ? '<button type="button" class="place-undo-btn" data-index="' + idx + '">' + escapeHtml(t('placeUndo')) + '</button>' : '';
       var replaceBtn = pools ? '<button type="button" class="place-replace-btn" data-index="' + idx + '">' + escapeHtml(t('placeReplaceBtn')) + '</button>' : '';
-      return '<li>' + highlightStar + '<span class="place-name">' + escapeHtml(p.name) + congestionHtml + '</span><div class="place-time">' + p.timeStart + ' ~ ' + p.timeEnd + '</div><div class="place-type">' + escapeHtml(p.type) + '</div>' + (p.addr ? '<div class="place-addr">' + escapeHtml(p.addr) + '</div>' : '') + '<div class="place-actions">' + verifyLink + replaceBtn + '</div></li>';
+      var travelHtml = (idx > 0 && p.travelFromPrevMin != null)
+        ? '<div class="place-travel">' + escapeHtml(t('travelMinutes').replace('%s', String(p.travelFromPrevMin))) + '</div>'
+        : '';
+      var costHtml = (p.estimatedCostWon != null && p.estimatedCostWon > 0)
+        ? '<div class="place-est-cost">' + escapeHtml(t('placeEstCost').replace('%s', formatWon(p.estimatedCostWon))) + '</div>'
+        : '';
+      var whyHtml = (p.pickWhy && p.pickWhy.length)
+        ? '<div class="place-why">' + p.pickWhy.map(function (w) {
+            return '<span class="place-why-chip">' + escapeHtml(w) + '</span>';
+          }).join('') + '</div>'
+        : '';
+      return '<li class="' + (p.pinned ? 'is-pinned' : '') + '">' + highlightStar + '<span class="place-name">' + escapeHtml(p.name) + congestionHtml + '</span>' + travelHtml + '<div class="place-time">' + p.timeStart + ' ~ ' + p.timeEnd + '</div><div class="place-type-row"><span class="place-type">' + escapeHtml(p.type) + '</span>' + slotSelect + '</div>' + costHtml + whyHtml + (p.addr ? '<div class="place-addr">' + escapeHtml(p.addr) + '</div>' : '') + '<div class="place-actions">' + verifyLink + reserveLink + menuLink + pinBtn + replaceBtn + undoBtn + '</div></li>';
     }).join('');
     itinerary.querySelectorAll('.place-replace-btn').forEach(function (btn) {
       var idx = parseInt(btn.getAttribute('data-index'), 10);
       if (!isNaN(idx)) btn.addEventListener('click', function () { replacePlanItem(idx); });
+    });
+    itinerary.querySelectorAll('.place-undo-btn').forEach(function (btn) {
+      var idx = parseInt(btn.getAttribute('data-index'), 10);
+      if (!isNaN(idx)) btn.addEventListener('click', function () { undoPlanItem(idx); });
+    });
+    itinerary.querySelectorAll('.place-pin-btn').forEach(function (btn) {
+      var idx = parseInt(btn.getAttribute('data-index'), 10);
+      if (!isNaN(idx)) btn.addEventListener('click', function () { togglePinPlanItem(idx); });
+    });
+    itinerary.querySelectorAll('.place-slot-select').forEach(function (sel) {
+      sel.addEventListener('change', function () {
+        var idx = parseInt(sel.getAttribute('data-index'), 10);
+        if (!isNaN(idx)) setPlanItemSlot(idx, sel.value);
+      });
     });
     if (mapAdapter && mapAdapter.addPlaceMarkers) {
       mapAdapter.clearPlaceMarkers();
@@ -3773,6 +5834,58 @@
     var div = document.createElement('div');
     div.textContent = s;
     return div.innerHTML;
+  }
+
+  function buildPlaceDeepLinks(place) {
+    var name = (place && place.name) || '';
+    var addr = (place && place.addr) || '';
+    var q = (name + (addr ? ' ' + addr : '')).trim() || name;
+    var enc = encodeURIComponent(q);
+    var lat = place && place.lat != null ? Number(place.lat) : null;
+    var lon = place && place.lon != null ? Number(place.lon) : null;
+    if (currentLang === 'en') {
+      var gq = (lat != null && lon != null && !isNaN(lat) && !isNaN(lon))
+        ? ('https://www.google.com/maps?q=' + lat + ',' + lon)
+        : ('https://www.google.com/maps/search/?api=1&query=' + enc);
+      return { map: gq, reserve: gq, menu: gq };
+    }
+    var placeSearch = 'https://map.naver.com/v5/search/' + enc;
+    return {
+      map: placeSearch,
+      reserve: placeSearch,
+      menu: placeSearch
+    };
+  }
+
+  function reportClientError(err, extra) {
+    try {
+      var payload = {
+        message: (err && err.message) ? String(err.message) : String(err || 'unknown'),
+        stack: (err && err.stack) ? String(err.stack) : '',
+        url: location.href,
+        lang: currentLang,
+        extra: extra || null
+      };
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon('/.netlify/functions/client-error', JSON.stringify(payload));
+      } else {
+        fetch('/.netlify/functions/client-error', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          keepalive: true
+        }).catch(function () {});
+      }
+    } catch (e) { }
+  }
+
+  function initClientMonitoring() {
+    window.addEventListener('error', function (ev) {
+      reportClientError(ev.error || ev.message);
+    });
+    window.addEventListener('unhandledrejection', function (ev) {
+      reportClientError(ev.reason || 'unhandledrejection');
+    });
   }
 
   function getTransportProfile() {
@@ -3823,36 +5936,33 @@
     showLoadingOverlay();
     setLoadingProgress(30, 'loadingTextFinish', 'loadingSubFinish');
     startLoadingProgressDrift(30, 90, 2500);
+    var dayStart = timeToMinutes(lastRenderedPlan.start || '12:00');
+    var dayEnd = timeToMinutes(lastRenderedPlan.end || '18:00');
     optimizeRouteOrder(lastRenderedPlan.plan).then(function (ordered) {
+      return applyTravelTimesToPlan(ordered, dayStart, dayEnd);
+    }).then(function (result) {
       hideLoadingOverlay();
+      var ordered = result.plan;
+      var notice = lastRenderedPlan.timeNotice || '';
+      if (result.overrun) {
+        notice = (notice ? notice + ' ' : '') + t('travelOverrunNotice');
+      }
       lastRenderedPlan.plan = ordered;
-      renderPlan(ordered, lastRenderedPlan.center, lastRenderedPlan.radiusMeters, lastRenderedPlan.start, lastRenderedPlan.end, lastRenderedPlan.timeNotice, lastRenderedPlan.estimatedCostWon != null ? lastRenderedPlan.estimatedCostWon : null, lastRenderedPlan.budgetWon != null ? lastRenderedPlan.budgetWon : null, lastRenderedPlan.pools || undefined, lastRenderedPlan.mbtiPJ || '', lastRenderedPlan.mbtiIE || '');
+      lastRenderedPlan.timeNotice = notice;
+      lastRenderedPlan.travelTotal = totalTravelMinutes(ordered);
+      renderPlan(ordered, lastRenderedPlan.center, lastRenderedPlan.radiusMeters, lastRenderedPlan.start, lastRenderedPlan.end, notice, lastRenderedPlan.estimatedCostWon != null ? lastRenderedPlan.estimatedCostWon : null, lastRenderedPlan.budgetWon != null ? lastRenderedPlan.budgetWon : null, lastRenderedPlan.pools || undefined, lastRenderedPlan.mbtiPJ || '', lastRenderedPlan.mbtiIE || '', {
+        whyItems: lastRenderedPlan.whyItems || null,
+        travelTotal: lastRenderedPlan.travelTotal
+      });
+    }).catch(function () {
+      hideLoadingOverlay();
     });
   }
 
   function resetResult() {
     resultSection.hidden = true;
+    updateMobileDockForResult(false);
     if (mapAdapter && mapAdapter.clearPlaceMarkers) mapAdapter.clearPlaceMarkers();
-  }
-
-  function buildKakaoShareText() {
-    if (!lastRenderedPlan || !lastRenderedPlan.plan || lastRenderedPlan.plan.length === 0) return '';
-    var lines = lastRenderedPlan.plan.map(function (p) {
-      return p.timeStart + ' ' + p.name + (p.typeKey === 'restaurant' ? '(예약 추천)' : '');
-    });
-    return lines.join(' ➔ ');
-  }
-
-  function copyKakaoPlan() {
-    var text = buildKakaoShareText();
-    if (!text) return;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function () {
-        showError(t('kakaoCopied'));
-      }).catch(function () { fallbackCopy(text, 'kakaoCopied'); });
-    } else {
-      fallbackCopy(text, 'kakaoCopied');
-    }
   }
 
   function fallbackCopy(text, messageKey) {
@@ -3870,18 +5980,285 @@
     document.body.removeChild(ta);
   }
 
-  var lastCardShareAdjective = '';
+  var lastCardShareTitle = '';
+
+  function getCardShareTitle() {
+    var fallback = t('cardShareTitleDefault') || '오늘 우리의 데이트 기록';
+    var raw = (cardShareModalTitle && typeof cardShareModalTitle.value === 'string')
+      ? cardShareModalTitle.value
+      : lastCardShareTitle;
+    var text = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (text.length > 18) text = text.slice(0, 18);
+    return text || fallback;
+  }
+
+  function slimPlanForShare(lr) {
+    if (!lr || !lr.plan) return null;
+    return {
+      v: 1,
+      title: lr.title || '',
+      start: lr.start || '',
+      end: lr.end || '',
+      date: getPlanDateForHours().toISOString().slice(0, 10),
+      center: lr.center ? {
+        lat: lr.center.lat,
+        lng: lr.center.lng != null ? lr.center.lng : lr.center.lon
+      } : null,
+      radiusMeters: lr.radiusMeters || null,
+      plan: lr.plan.map(function (p) {
+        return {
+          n: p.name,
+          t: p.type,
+          tk: p.typeKey,
+          lat: p.lat,
+          lon: p.lon,
+          a: p.addr || '',
+          ts: p.timeStart,
+          te: p.timeEnd,
+          c: p.estimatedCostWon != null ? p.estimatedCostWon : null
+        };
+      })
+    };
+  }
+
+  function encodePlanSharePayload(payload) {
+    try {
+      return btoa(unescape(encodeURIComponent(JSON.stringify(payload))))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/g, '');
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function decodePlanSharePayload(enc) {
+    try {
+      var b64 = String(enc || '').replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      var json = decodeURIComponent(escape(atob(b64)));
+      return JSON.parse(json);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function buildPlanShareUrl(lr) {
+    var payload = slimPlanForShare(lr || lastRenderedPlan);
+    if (!payload) return '';
+    var enc = encodePlanSharePayload(payload);
+    if (!enc) return '';
+    var base = location.origin + location.pathname + (location.search || '');
+    return base + '#p=' + enc;
+  }
+
+  function expandSharedPlan(payload) {
+    if (!payload || !payload.plan || !payload.plan.length) return null;
+    var plan = payload.plan.map(function (p) {
+      return {
+        name: p.n || p.name || '',
+        type: p.t || p.type || '',
+        typeKey: p.tk || p.typeKey || 'place',
+        lat: p.lat,
+        lon: p.lon,
+        addr: p.a || p.addr || '',
+        timeStart: p.ts || p.timeStart || '',
+        timeEnd: p.te || p.timeEnd || '',
+        estimatedCostWon: p.c != null ? p.c : null,
+        tags: {}
+      };
+    });
+    return {
+      plan: plan,
+      title: payload.title || '',
+      start: payload.start || (plan[0] && plan[0].timeStart) || '12:00',
+      end: payload.end || (plan[plan.length - 1] && plan[plan.length - 1].timeEnd) || '18:00',
+      center: payload.center ? {
+        lat: payload.center.lat,
+        lng: payload.center.lng != null ? payload.center.lng : payload.center.lon
+      } : null,
+      radiusMeters: payload.radiusMeters || 1500,
+      date: payload.date || null
+    };
+  }
+
+  function loadSharedPlanFromHash() {
+    var hash = location.hash || '';
+    var m = hash.match(/^#p=(.+)$/);
+    if (!m) return false;
+    var payload = decodePlanSharePayload(m[1]);
+    var expanded = expandSharedPlan(payload);
+    if (!expanded) {
+      showError(t('sharePlanLoadFailed'));
+      return false;
+    }
+    var center = expanded.center || { lat: DEFAULT_LAT, lng: DEFAULT_LNG };
+    var cost = 0;
+    expanded.plan.forEach(function (p) {
+      if (p.estimatedCostWon != null) cost += p.estimatedCostWon;
+    });
+    if (advancedSection) {
+      advancedSection.hidden = false;
+      setAdvancedDetailsOpen(false);
+    }
+    renderPlan(
+      expanded.plan,
+      center,
+      expanded.radiusMeters,
+      expanded.start,
+      expanded.end,
+      null,
+      cost || null,
+      null,
+      null,
+      '',
+      ''
+    );
+    if (lastRenderedPlan) lastRenderedPlan.title = expanded.title || t('planCardTitle');
+    var nameInput = $('planNameInput');
+    if (nameInput) nameInput.value = expanded.title || '';
+    updateMobileDockForResult(true);
+    if (resultSection) {
+      resultSection.hidden = false;
+      resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    addPlanToPlansArea(
+      expanded.plan,
+      center,
+      expanded.radiusMeters,
+      expanded.start,
+      expanded.end,
+      null,
+      cost || null,
+      null,
+      '',
+      ''
+    );
+    showError(t('sharePlanLoaded'));
+    return true;
+  }
+
+  function copyPlanShareLink() {
+    var url = buildPlanShareUrl(lastRenderedPlan);
+    if (!url) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(function () {
+        showError(t('sharePlanLinkCopied'));
+      }).catch(function () { fallbackCopy(url, 'sharePlanLinkCopied'); });
+    } else {
+      fallbackCopy(url, 'sharePlanLinkCopied');
+    }
+  }
+
+  function icsEscape(text) {
+    return String(text || '')
+      .replace(/\\/g, '\\\\')
+      .replace(/;/g, '\\;')
+      .replace(/,/g, '\\,')
+      .replace(/\n/g, '\\n');
+  }
+
+  function icsDateStamp(d) {
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getUTCFullYear() +
+      pad(d.getUTCMonth() + 1) +
+      pad(d.getUTCDate()) + 'T' +
+      pad(d.getUTCHours()) +
+      pad(d.getUTCMinutes()) +
+      pad(d.getUTCSeconds()) + 'Z';
+  }
+
+  function icsLocalDateTime(dateObj, hhmm) {
+    var parts = String(hhmm || '12:00').split(':');
+    var h = parseInt(parts[0], 10) || 0;
+    var m = parseInt(parts[1], 10) || 0;
+    var d = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), h, m, 0);
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    return d.getFullYear() +
+      pad(d.getMonth() + 1) +
+      pad(d.getDate()) + 'T' +
+      pad(d.getHours()) +
+      pad(d.getMinutes()) +
+      '00';
+  }
+
+  function downloadPlanIcs() {
+    if (!lastRenderedPlan || !lastRenderedPlan.plan || !lastRenderedPlan.plan.length) return;
+    var day = getPlanDateForHours();
+    var stamp = icsDateStamp(new Date());
+    var title = getPlanDisplayTitle(lastRenderedPlan.title);
+    var lines = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Auvia//Date Planner//KO',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH'
+    ];
+    lastRenderedPlan.plan.forEach(function (p, i) {
+      var uid = 'auvia-' + Date.now() + '-' + i + '@auvia.netlify.app';
+      var desc = (p.type || '') + (p.addr ? ('\n' + p.addr) : '');
+      var geo = (p.lat != null && p.lon != null) ? ('GEO:' + p.lat + ';' + p.lon) : null;
+      lines.push('BEGIN:VEVENT');
+      lines.push('UID:' + uid);
+      lines.push('DTSTAMP:' + stamp);
+      lines.push('DTSTART:' + icsLocalDateTime(day, p.timeStart));
+      lines.push('DTEND:' + icsLocalDateTime(day, p.timeEnd));
+      lines.push('SUMMARY:' + icsEscape(p.name || ('Stop ' + (i + 1))));
+      if (desc) lines.push('DESCRIPTION:' + icsEscape(desc));
+      if (p.addr) lines.push('LOCATION:' + icsEscape(p.addr));
+      if (geo) lines.push(geo);
+      lines.push('END:VEVENT');
+    });
+    lines.push('END:VCALENDAR');
+    var blob = new Blob([lines.join('\r\n')], { type: 'text/calendar;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = (title || 'auvia-plan').replace(/[\\/:*?"<>|]/g, '_') + '.ics';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+    showError(t('icsDownloaded'));
+  }
+
+  function loadQrImage(dataUrlOrHttp) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = function () { resolve(img); };
+      img.onerror = reject;
+      img.src = dataUrlOrHttp;
+    });
+  }
 
   function openCardShareModal() {
     if (!lastRenderedPlan || !lastRenderedPlan.plan || lastRenderedPlan.plan.length === 0) return;
-    var adjs = currentLang === 'ko' ? ['로맨틱한', '맛있는', '특별한', '즐거운', '달콤한'] : ['romantic', 'tasty', 'special', 'fun', 'sweet'];
-    var adj = adjs[Math.floor(Math.random() * adjs.length)];
-    lastCardShareAdjective = adj;
-    var title = (t('cardShareTitle') || '오늘 우리의 %s 데이트 기록').replace('%s', adj);
-    if (cardShareModalTitle) cardShareModalTitle.textContent = title;
+    var title = lastCardShareTitle || t('cardShareTitleDefault') || '오늘 우리의 데이트 기록';
+    if (title.length > 18) title = title.slice(0, 18);
+    if (cardShareModalTitle) {
+      cardShareModalTitle.value = title;
+      cardShareModalTitle.maxLength = 18;
+      cardShareModalTitle.oninput = function () {
+        if (cardShareModalTitle.value.length > 18) {
+          cardShareModalTitle.value = cardShareModalTitle.value.slice(0, 18);
+        }
+        lastCardShareTitle = cardShareModalTitle.value;
+      };
+    }
     if (cardShareList) {
-      cardShareList.innerHTML = lastRenderedPlan.plan.map(function (p, i) {
+      var head = '';
+      if (lastRenderedPlan.estimatedCostWon != null && lastRenderedPlan.estimatedCostWon > 0) {
+        head = '<div class="card-share-meta">' + escapeHtml(t('summaryCost').replace('%s', formatWon(lastRenderedPlan.estimatedCostWon))) +
+          (lastRenderedPlan.travelTotal ? ' · ' + escapeHtml(t('summaryTravel').replace('%s', String(lastRenderedPlan.travelTotal))) : '') +
+          '</div>';
+      }
+      cardShareList.innerHTML = head + lastRenderedPlan.plan.map(function (p, i) {
+        var travel = (i > 0 && p.travelFromPrevMin != null)
+          ? '<span class="card-share-travel">' + escapeHtml(t('travelMinutes').replace('%s', String(p.travelFromPrevMin))) + '</span>'
+          : '';
         return '<div class="card-share-item">' +
+          travel +
           '<span class="card-share-time">' + escapeHtml(p.timeStart + ' ~ ' + p.timeEnd) + '</span>' +
           '<span class="card-share-name">' + escapeHtml(p.name) + '</span>' +
           '</div>';
@@ -3892,8 +6269,188 @@
       cardShareModal.classList.add('is-visible');
     }
     if (btnCopyCardText) btnCopyCardText.onclick = copyCardShareText;
+    if ($('btnDownloadCardImage')) $('btnDownloadCardImage').onclick = downloadCardShareImage;
+    if ($('btnCopySharePlanLink')) $('btnCopySharePlanLink').onclick = copyPlanShareLink;
     if (cardShareBackdrop) cardShareBackdrop.onclick = closeCardShareModal;
     if (btnCloseCardShare) btnCloseCardShare.onclick = closeCardShareModal;
+  }
+
+  function downloadCardShareImage() {
+    if (!lastRenderedPlan || !lastRenderedPlan.plan || !lastRenderedPlan.plan.length) return;
+    var plan = lastRenderedPlan.plan;
+    var title = getCardShareTitle();
+    var shareUrl = buildPlanShareUrl(lastRenderedPlan);
+    var W = 1080;
+    var H = 1480;
+    var canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    var ctx = canvas.getContext('2d');
+
+    function paintBase() {
+      var bg = ctx.createLinearGradient(0, 0, W, H);
+      bg.addColorStop(0, '#0b0b10');
+      bg.addColorStop(0.45, '#14121c');
+      bg.addColorStop(1, '#1a1424');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, W, H);
+      var glow = ctx.createRadialGradient(W * 0.8, 80, 20, W * 0.75, 120, 420);
+      glow.addColorStop(0, 'rgba(167,139,250,0.28)');
+      glow.addColorStop(1, 'rgba(167,139,250,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, 0, W, H);
+      var glow2 = ctx.createRadialGradient(120, H - 80, 10, 160, H - 40, 380);
+      glow2.addColorStop(0, 'rgba(251,113,133,0.18)');
+      glow2.addColorStop(1, 'rgba(251,113,133,0)');
+      ctx.fillStyle = glow2;
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = 'rgba(250,250,250,0.92)';
+      ctx.font = '700 42px Outfit, system-ui, sans-serif';
+      ctx.fillText('Auvia', 72, 96);
+      ctx.strokeStyle = 'rgba(212,175,55,0.75)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(72, 118);
+      ctx.lineTo(210, 118);
+      ctx.stroke();
+      ctx.fillStyle = '#fafafa';
+      ctx.font = '700 54px Outfit, system-ui, sans-serif';
+      wrapCanvasText(ctx, title, 72, 200, W - 144, 66);
+      var meta = (lastRenderedPlan.start || '') + ' – ' + (lastRenderedPlan.end || '');
+      var travelTot = lastRenderedPlan.travelTotal || totalTravelMinutes(plan);
+      if (travelTot > 0) {
+        meta += currentLang === 'en'
+          ? ('  ·  ~' + travelTot + ' min travel')
+          : ('  ·  이동 약 ' + travelTot + '분');
+      }
+      ctx.fillStyle = 'rgba(228,228,231,0.7)';
+      ctx.font = '500 28px Outfit, system-ui, sans-serif';
+      ctx.fillText(meta, 72, 320);
+      if (lastRenderedPlan.estimatedCostWon != null && lastRenderedPlan.estimatedCostWon > 0) {
+        var costLine = currentLang === 'en'
+          ? ('Est. ₩' + formatWon(lastRenderedPlan.estimatedCostWon) + ' / person')
+          : ('예상 인당 약 ' + formatWon(lastRenderedPlan.estimatedCostWon) + '원');
+        ctx.fillStyle = 'rgba(103,232,249,0.9)';
+        ctx.font = '600 26px Outfit, system-ui, sans-serif';
+        ctx.fillText(costLine, 72, 358);
+      }
+      var y = 410;
+      plan.slice(0, 5).forEach(function (p, i) {
+        ctx.fillStyle = 'rgba(167,139,250,0.95)';
+        ctx.beginPath();
+        ctx.arc(88, y + 12, 8, 0, Math.PI * 2);
+        ctx.fill();
+        if (i < Math.min(plan.length, 5) - 1) {
+          ctx.strokeStyle = 'rgba(167,139,250,0.35)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(88, y + 22);
+          ctx.lineTo(88, y + 118);
+          ctx.stroke();
+        }
+        ctx.fillStyle = 'rgba(103,232,249,0.95)';
+        ctx.font = '600 26px Outfit, system-ui, sans-serif';
+        ctx.fillText((p.timeStart || '') + '  ·  ' + (p.timeEnd || ''), 120, y + 8);
+        ctx.fillStyle = '#fafafa';
+        ctx.font = '600 36px Outfit, system-ui, sans-serif';
+        var name = String(p.name || '');
+        if (name.length > 22) name = name.slice(0, 21) + '…';
+        ctx.fillText(name, 120, y + 52);
+        ctx.fillStyle = 'rgba(161,161,170,0.95)';
+        ctx.font = '500 24px Outfit, system-ui, sans-serif';
+        var typeLine = String(p.type || '');
+        if (i > 0 && p.travelFromPrevMin != null) {
+          typeLine += currentLang === 'en'
+            ? (' · ' + p.travelFromPrevMin + ' min move')
+            : (' · 이동 ' + p.travelFromPrevMin + '분');
+        }
+        if (p.estimatedCostWon != null && p.estimatedCostWon > 0) {
+          typeLine += currentLang === 'en'
+            ? (' · ₩' + formatWon(p.estimatedCostWon))
+            : (' · 약 ' + formatWon(p.estimatedCostWon) + '원');
+        }
+        ctx.fillText(typeLine, 120, y + 88);
+        y += 130;
+      });
+    }
+
+    function finishDownload() {
+      canvas.toBlob(function (blob) {
+        if (!blob) return;
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'auvia-date-card.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+        showError(t('cardImageSaved'));
+      }, 'image/png');
+    }
+
+    paintBase();
+    if (!shareUrl) {
+      ctx.fillStyle = 'rgba(250,250,250,0.45)';
+      ctx.font = '500 24px Outfit, system-ui, sans-serif';
+      ctx.fillText('auvia.netlify.app', 72, H - 64);
+      finishDownload();
+      return;
+    }
+
+    var qrApi = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&color=0b0b10&bgcolor=fafafa&data=' + encodeURIComponent(shareUrl);
+    loadQrImage(qrApi).then(function (img) {
+      var qSize = 200;
+      var qx = W - 72 - qSize;
+      var qy = H - 72 - qSize - 36;
+      ctx.fillStyle = 'rgba(255,255,255,0.96)';
+      roundRect(ctx, qx - 14, qy - 14, qSize + 28, qSize + 28, 18);
+      ctx.fill();
+      ctx.drawImage(img, qx, qy, qSize, qSize);
+      ctx.fillStyle = 'rgba(250,250,250,0.7)';
+      ctx.font = '500 22px Outfit, system-ui, sans-serif';
+      ctx.fillText(currentLang === 'en' ? 'Scan to open plan' : 'QR을 찍으면 계획표가 열려요', 72, H - 72);
+      ctx.fillStyle = 'rgba(250,250,250,0.4)';
+      ctx.font = '500 20px Outfit, system-ui, sans-serif';
+      ctx.fillText('auvia.netlify.app', 72, H - 40);
+      finishDownload();
+    }).catch(function () {
+      ctx.fillStyle = 'rgba(250,250,250,0.7)';
+      ctx.font = '500 22px Outfit, system-ui, sans-serif';
+      ctx.fillText(shareUrl.slice(0, 42) + '…', 72, H - 72);
+      ctx.fillStyle = 'rgba(250,250,250,0.4)';
+      ctx.font = '500 20px Outfit, system-ui, sans-serif';
+      ctx.fillText('auvia.netlify.app', 72, H - 40);
+      finishDownload();
+    });
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    var radius = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.arcTo(x + w, y, x + w, y + h, radius);
+    ctx.arcTo(x + w, y + h, x, y + h, radius);
+    ctx.arcTo(x, y + h, x, y, radius);
+    ctx.arcTo(x, y, x + w, y, radius);
+    ctx.closePath();
+  }
+
+  function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight) {
+    var words = String(text || '').split(/\s+/);
+    var line = '';
+    var yy = y;
+    for (var n = 0; n < words.length; n++) {
+      var test = line ? (line + ' ' + words[n]) : words[n];
+      if (ctx.measureText(test).width > maxWidth && line) {
+        ctx.fillText(line, x, yy);
+        line = words[n];
+        yy += lineHeight;
+      } else {
+        line = test;
+      }
+    }
+    if (line) ctx.fillText(line, x, yy);
   }
 
   function closeCardShareModal() {
@@ -3905,8 +6462,7 @@
 
   function buildCardShareText() {
     if (!lastRenderedPlan || !lastRenderedPlan.plan || lastRenderedPlan.plan.length === 0) return '';
-    var adj = lastCardShareAdjective || (currentLang === 'ko' ? '특별한' : 'special');
-    var title = (t('cardShareTitle') || '오늘 우리의 %s 데이트 기록').replace('%s', adj);
+    var title = getCardShareTitle();
     var lines = lastRenderedPlan.plan.map(function (p) {
       return p.timeStart + ' ~ ' + p.timeEnd + '  ' + p.name;
     });
@@ -3991,6 +6547,8 @@
     var idx = savedPlans.findIndex(function (p) { return p.id === id; });
     if (idx === -1) return;
     savedPlans.splice(idx, 1);
+    persistSavedPlansLocal();
+    deletePlanCloud(id);
     var card = plansList && plansList.querySelector('[data-plan-id="' + id + '"]');
     if (card) card.remove();
     if (lastRenderedPlan && lastRenderedPlan.id === id) {
@@ -4002,6 +6560,7 @@
       plansList.innerHTML = '';
       if (plansEmpty) plansEmpty.hidden = false;
     }
+    renderMobilePlansPanel();
   }
 
   function editSavedPlanName(id) {
@@ -4012,6 +6571,8 @@
     if (next == null) return;
     next = String(next).trim();
     item.title = next || t('planCardTitle');
+    persistSavedPlansLocal();
+    upsertPlanCloud(item);
     var card = plansList && plansList.querySelector('[data-plan-id="' + id + '"]');
     if (card) {
       var titleEl = card.querySelector('.plan-card-title');
@@ -4020,13 +6581,14 @@
     var nameInput = $('planNameInput');
     if (nameInput) nameInput.value = item.title || '';
     showSavedPlan(id);
+    renderMobilePlansPanel();
   }
 
   function addPlanToPlansArea(plan, center, radiusMeters, start, end, timeNotice, estimatedCostWon, budgetWon, mbtiPJ, mbtiIE) {
     if (!plansList || !plansEmpty) return;
     var id = Date.now();
     var title = getPlanNameInputValue() || t('planCardTitle');
-    savedPlans.unshift({
+    var item = {
       id: id,
       title: title,
       plan: plan,
@@ -4039,7 +6601,10 @@
       budgetWon: budgetWon != null ? budgetWon : null,
       mbtiPJ: mbtiPJ || '',
       mbtiIE: mbtiIE || '',
-    });
+    };
+    savedPlans.unshift(item);
+    persistSavedPlansLocal();
+    upsertPlanCloud(item);
     if (lastRenderedPlan) {
       lastRenderedPlan.id = id;
       lastRenderedPlan.title = title;
@@ -4062,6 +6627,7 @@
     card.querySelector('[data-action="edit"]').addEventListener('click', function (e) { e.stopPropagation(); editSavedPlanName(id); });
     card.querySelector('[data-action="delete"]').addEventListener('click', function (e) { e.stopPropagation(); deleteSavedPlan(id); });
     plansList.insertBefore(card, plansList.firstChild);
+    renderMobilePlansPanel();
   }
 
   function initShareMapOnce() {
@@ -4188,6 +6754,8 @@
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(url).then(function () {
         if (shareLinkHint) { shareLinkHint.textContent = t('shareLinkCopied'); shareLinkHint.style.color = 'var(--violet)'; setTimeout(function () { shareLinkHint.textContent = ''; shareLinkHint.style.color = ''; }, 3000); }
+      }).catch(function () {
+        if (shareLinkHint) { shareLinkHint.textContent = url; shareLinkHint.style.color = 'var(--text-muted)'; }
       });
     } else {
       if (shareLinkHint) { shareLinkHint.textContent = url; shareLinkHint.style.color = 'var(--text-muted)'; }
@@ -4273,6 +6841,10 @@
         if (!baseKey) return;
         var customKey = editingPresetKey || (baseKey + '-custom-' + name.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9가-힣_-]/g, '').slice(0, 30) || 'custom');
         var data = getCustomPresetDataFromModal();
+        if (data.quickRegion === 'pick' && (data.searchCenterLat == null || data.searchCenterLng == null)) {
+          if (savePresetCustomError) savePresetCustomError.textContent = t('customPresetPickCoordsNone');
+          return;
+        }
         if (saveCoursePresetToKey(customKey, null, data)) {
           if (editingPresetKey) {
             if (editingPresetOldName && name !== editingPresetOldName) updateCustomPresetName(editingPresetOldName, name);
@@ -4309,12 +6881,17 @@
     }
     applyLanguage();
     initMap();
-    applyShareStateFromHash();
-    if (location.hash && location.hash.indexOf('share=') !== -1) switchTab('share');
+    setTimeout(function () { loadSharedPlanFromHash(); }, 200);
   };
   applyLanguage();
+  bindLocationConsentHandlers();
+  bindMobileChromeHandlers();
+  initClientMonitoring();
   initSupabaseAuth();
   bindSavePresetModalHandlers();
+  setTimeout(function () {
+    if (!window.naver || !window.naver.maps) loadSharedPlanFromHash();
+  }, 900);
   if (btnLoadPresetToggle) {
     btnLoadPresetToggle.addEventListener('click', toggleLoadPresetList);
   }
@@ -4324,6 +6901,11 @@
       if (!item || item.classList.contains('saved-preset-empty')) return;
       var key = item.getAttribute('data-preset-key');
       if (!key) return;
+      if (e.target.closest('.saved-preset-fav')) {
+        toggleFavoritePreset(key);
+        renderSavedPresetList();
+        return;
+      }
       if (e.target.closest('.saved-preset-delete')) {
         if (confirm(t('confirmDeletePreset'))) {
           deletePreset(key);

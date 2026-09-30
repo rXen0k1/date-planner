@@ -40,3 +40,5 @@
 
 - 장소 데이터는 OpenStreetMap 기반이라 등록된 곳만 나옵니다. 반경을 넓히거나 다른 지역을 선택해 보세요.
 - HTTPS 또는 `localhost`에서 실행해야 위치 권한이 동작합니다.
+- 이용약관·개인정보처리방침: `legal/terms.html`, `legal/privacy.html`
+- 로그인 후 프리셋/계획 클라우드 동기화: Supabase SQL Editor에서 `supabase-schema.sql` 실행

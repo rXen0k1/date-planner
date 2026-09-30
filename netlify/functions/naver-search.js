@@ -1,6 +1,7 @@
 export async function handler(event) {
-  const query = event.queryStringParameters.query || "";
-  const sortParam = event.queryStringParameters.sort === "comment" ? "comment" : "random";
+  const qs = event.queryStringParameters || {};
+  const query = qs.query || "";
+  const sortParam = qs.sort === "comment" ? "comment" : "random";
 
   if (!query.trim()) {
     return { statusCode: 400, body: "query required" };

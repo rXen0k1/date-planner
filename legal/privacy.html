@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>개인정보처리방침 · Auvia</title>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root { --bg: #0f0f14; --text: #f4f4f5; --muted: #a1a1aa; --accent: #a78bfa; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Outfit, system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.65; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+    a { color: var(--accent); }
+    h1 { font-size: 1.75rem; margin: 0 0 0.5rem; }
+    .meta { color: var(--muted); font-size: 0.9rem; margin-bottom: 2rem; }
+    h2 { font-size: 1.15rem; margin: 2rem 0 0.75rem; }
+    p, li { color: #e4e4e7; font-size: 0.95rem; }
+    ul { padding-left: 1.25rem; }
+    .back { display: inline-block; margin-bottom: 1.5rem; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="../index.html">← Auvia로 돌아가기</a>
+    <h1>개인정보처리방침</h1>
+    <p class="meta">시행일: 2026년 3월 20일 · Auvia(오비아)</p>
+
+    <h2>1. 수집하는 개인정보</h2>
+    <ul>
+      <li><strong>계정</strong>: 이메일, 비밀번호(암호화·해시 형태로 인증 제공자 저장), 선택 입력한 표시 이름</li>
+      <li><strong>위치</strong>: 이용자가 “내 위치” 기능을 동의·허용한 경우에 한해, 브라우저가 제공하는 대략적 좌표(일정 생성·지도 표시용). 서버에 상시 추적·저장하지 않는 것을 원칙으로 합니다.</li>
+      <li><strong>이용 기록</strong>: 저장한 코스 취향(프리셋), 생성한 계획표(로그인한 경우 클라우드 동기화 시), 언어 설정 등 서비스 제공에 필요한 데이터</li>
+      <li><strong>기기·로그</strong>: 접속 환경에 따라 IP, 브라우저 종류 등이 호스팅·보안 로그에 남을 수 있습니다.</li>
+    </ul>
+
+    <h2>2. 이용 목적</h2>
+    <ul>
+      <li>회원 가입·로그인·본인 확인</li>
+      <li>주변 장소 검색·일정 추천·지도·날씨 표시</li>
+      <li>프리셋·계획표 저장 및 (로그인 시) 기기 간 동기화</li>
+      <li>서비스 안정성·부정 이용 방지·문의 대응</li>
+    </ul>
+
+    <h2>3. 보관 및 파기</h2>
+    <p>회원 정보는 회원 탈퇴 또는 목적 달성 시까지 보관하며, 관련 법령에 따라 보관이 필요한 경우 해당 기간 동안 보관 후 파기합니다. 브라우저 localStorage에 저장된 설정은 이용자가 삭제하거나 로그아웃·캐시 삭제 시 제거될 수 있습니다.</p>
+
+    <h2>4. 제3자 제공·처리 위탁</h2>
+    <p>서비스 운영을 위해 다음 유형의 외부 서비스를 이용할 수 있습니다. 각 제공자의 정책이 적용됩니다.</p>
+    <ul>
+      <li>인증·데이터베이스: Supabase 등</li>
+      <li>호스팅: Netlify 등</li>
+      <li>지도·장소·검색: OpenStreetMap/Overpass, (설정 시) 네이버 지도·검색 API 등</li>
+      <li>날씨: Open-Meteo 등</li>
+      <li>경로: OSRM 등 공개 라우팅 서비스</li>
+    </ul>
+    <p>법령에 따른 요청이 있는 경우를 제외하고, 마케팅 목적으로 개인정보를 제3자에게 판매하지 않습니다.</p>
+
+    <h2>5. 위치정보</h2>
+    <p>“내 위치” 사용 전 서비스 내 위치 이용 안내·동의 UI를 제공하며, 브라우저 위치 권한도 별도로 필요합니다. 동의·권한을 거부해도 “지도에서 찍기” 등 다른 방식으로 서비스를 이용할 수 있습니다. 위치는 요청 시점의 일정 구성·지도 표시에 사용됩니다.</p>
+
+    <h2>6. 이용자 권리</h2>
+    <p>계정 정보 열람·수정, 회원 탈퇴, 저장된 프리셋·계획 삭제, 위치 권한 철회(브라우저 설정)를 요청·실행할 수 있습니다. 문의는 서비스 운영 채널로 연락해 주세요.</p>
+
+    <h2>7. 안전성 확보</h2>
+    <p>HTTPS 전송, 인증 제공자의 계정 보안 기능, 행 수준 보안(RLS) 등 합리적 보호 조치를 적용하도록 노력합니다. 다만 인터넷 환경의 특성상 완전한 보안을 보장하지는 않습니다.</p>
+
+    <h2>8. 방침 변경</h2>
+    <p>본 방침을 변경하면 본 페이지에 게시하며, 중요 변경 시 서비스 내 고지를 병행할 수 있습니다.</p>
+
+    <p lang="en" class="meta" style="margin-top:2.5rem;">English summary: We collect account data, optional location (with consent), and saved preferences/plans to run Auvia. Data may be processed by hosting, auth, map, weather, and routing providers. Location is not used for continuous tracking. You can withdraw consent and delete stored data.</p>
+  </div>
+</body>
+</html>

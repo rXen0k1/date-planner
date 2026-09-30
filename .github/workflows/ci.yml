@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run unit tests
+        run: npm test
+      - name: Syntax check app.js
+        run: node --check app.js
+      - name: Syntax check naver-search function
+        run: node --check netlify/functions/naver-search.js
+      - name: Syntax check client-error function
+        run: node --check netlify/functions/client-error.js

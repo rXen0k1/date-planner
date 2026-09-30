@@ -2,12 +2,25 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="description" content="데이트 계획이 고민인가요? Auvia(오비아)가 전 세계 어디든 당신만을 위한 빛나는 데이트 경로를 무료로 설계해 드립니다." />
+  <meta name="theme-color" content="#0f0f14" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Auvia" />
+  <meta property="og:url" content="https://auvia.netlify.app/" />
   <meta property="og:title" content="Auvia (오비아) - 세상에서 가장 쉬운 데이트 플래너" />
   <meta property="og:description" content="귀찮은 데이트 코스 짜기, 이제 오비아에게 맡기세요." />
+  <meta property="og:image" content="https://auvia.netlify.app/public/og-auvia.png" />
+  <meta property="og:image:width" content="1376" />
+  <meta property="og:image:height" content="768" />
+  <meta property="og:locale" content="ko_KR" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Auvia (오비아) - 세상에서 가장 쉬운 데이트 플래너" />
+  <meta name="twitter:description" content="귀찮은 데이트 코스 짜기, 이제 오비아에게 맡기세요." />
+  <meta name="twitter:image" content="https://auvia.netlify.app/public/og-auvia.png" />
   <meta name="google-site-verification" content="s3iFm7aU8U9GH-xR1Xj8FrLO_HSsRHz5fI9AAsley_U" />
   <meta name="naver-site-verification" content="31bdbed1ed9d005fa97250e24595ccf45ad027bf" />
+  <link rel="canonical" href="https://auvia.netlify.app/" />
   <!-- Auvia 파비콘 / 앱 아이콘 -->
   <link rel="apple-touch-icon" sizes="180x180" href="./public/apple-touch-icon.png" />
   <link rel="icon" type="image/png" sizes="32x32" href="./public/favicon-32x32.png" />
@@ -15,6 +28,20 @@
   <link rel="shortcut icon" href="./public/favicon.ico" />
   <link rel="manifest" href="./public/site.webmanifest" />
   <title>Auvia (오비아) | 5초 만에 짜는 완벽한 데이트 코스</title>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "Auvia",
+    "alternateName": "오비아",
+    "url": "https://auvia.netlify.app/",
+    "description": "위치와 시간만 입력하면 맛집·카페·놀거리를 한 번에 짜 주는 데이트 코스 플래너",
+    "applicationCategory": "LifestyleApplication",
+    "operatingSystem": "Web",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "KRW" },
+    "inLanguage": ["ko", "en"]
+  }
+  </script>
   <!-- 네이버 지도 API (ncpClientId는 네이버 클라우드 플랫폼에서 발급) -->
   <link rel="preconnect" href="https://oapi.map.naver.com">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -64,6 +91,7 @@
                   <label class="chip"><input type="radio" name="quickRegion" value="my" checked /><span id="quickRegionMy">내 위치</span></label>
                   <label class="chip"><input type="radio" name="quickRegion" value="pick" /><span id="quickRegionPick">지도 찍기</span></label>
                 </div>
+                <div class="recent-regions" id="recentRegions" hidden></div>
               </div>
               <div class="quick-field">
                 <label id="labelPriceTier">가격대</label>
@@ -122,20 +150,8 @@
                 </div>
               </div>
             </div>
-            <button type="button" class="btn btn-outline pill btn-save-preset" id="btnSaveCoursePreset" hidden>
-              <span id="btnSaveCoursePresetText">내 코스 취향 저장하기</span>
-            </button>
-            <div class="load-preset-wrap load-preset-mz" id="loadPresetWrap" hidden>
-              <button type="button" class="btn load-preset-toggle-mz" id="btnLoadPresetToggle" aria-expanded="false" aria-controls="savedPresetList">
-                <span id="btnLoadPresetToggleText" class="load-preset-mz-label">저장한 설정 불러오기</span>
-                <span class="load-preset-arrow" id="loadPresetArrow" aria-hidden="true">▼</span>
-              </button>
-              <div class="saved-preset-list-wrap" hidden>
-                <ul class="saved-preset-list saved-preset-list-mz" id="savedPresetList" role="list" hidden></ul>
-              </div>
-            </div>
             <button type="button" class="btn btn-main pill cta-btn" id="btnQuickCourse">
-              <span id="btnQuickCourseText">오늘 코스 뚝딱</span>
+              <span id="btnQuickCourseText">상세 설정</span>
               <span class="btn-arrow">→</span>
             </button>
           </div>
@@ -143,6 +159,11 @@
 
         <!-- 상세 설정 (접기) -->
         <section class="advanced-section" id="advancedSection" hidden>
+          <button type="button" class="details-toggle" id="btnToggleDetails" aria-expanded="false">
+            <span id="btnToggleDetailsText">지도·날씨·상세 설정</span>
+            <span class="details-toggle-arrow" aria-hidden="true">▼</span>
+          </button>
+          <div class="advanced-section-body" id="advancedSectionBody" hidden>
           <h2 class="section-heading" id="advancedHeading">상세 설정</h2>
           <section class="bento">
             <div class="bento-card plans-card">
@@ -193,6 +214,12 @@
                 </div>
                 <div class="field-group">
                   <label id="labelTimeRange"></label>
+                  <div class="chip-group" id="timePresetGroup">
+                    <button type="button" class="chip time-preset-chip" data-time-preset="lunch" id="timePresetLunch">점심</button>
+                    <button type="button" class="chip time-preset-chip" data-time-preset="dinner" id="timePresetDinner">저녁</button>
+                    <button type="button" class="chip time-preset-chip" data-time-preset="day" id="timePresetDay">하루</button>
+                  </div>
+                  <p class="hint" id="timePresetHint">누르면 아래 시작·종료 시각만 바뀌어요. 직접 고쳐도 되고, 일정은 일정 만들기로 만듭니다.</p>
                   <div class="time-row">
                     <input type="time" id="startTime" value="12:00" />
                     <span>~</span>
@@ -217,6 +244,20 @@
                 </button>
               </div>
             </div>
+            <div class="course-preset-bar" id="coursePresetBar">
+              <button type="button" class="btn btn-outline pill btn-save-preset" id="btnSaveCoursePreset" hidden>
+                <span id="btnSaveCoursePresetText">내 코스 취향 저장하기</span>
+              </button>
+              <div class="load-preset-wrap load-preset-mz" id="loadPresetWrap" hidden>
+                <button type="button" class="btn load-preset-toggle-mz" id="btnLoadPresetToggle" aria-expanded="false" aria-controls="savedPresetList">
+                  <span id="btnLoadPresetToggleText" class="load-preset-mz-label">저장한 설정 불러오기</span>
+                  <span class="load-preset-arrow" id="loadPresetArrow" aria-hidden="true">▼</span>
+                </button>
+                <div class="saved-preset-list-wrap" hidden>
+                  <ul class="saved-preset-list saved-preset-list-mz" id="savedPresetList" role="list" hidden></ul>
+                </div>
+              </div>
+            </div>
             <div class="bento-card weather-card glass" id="weatherCardWrap">
               <h2 class="card-title" id="weatherCardTitle">날씨</h2>
               <p class="weather-card-prompt" id="weatherCardPrompt">일정 계획 날을 선택하세요.</p>
@@ -229,6 +270,7 @@
               <p class="map-hint" id="mapHint"></p>
             </div>
           </section>
+          </div>
         </section>
 
         <!-- 결과: 오늘의 플랜 -->
@@ -241,20 +283,25 @@
             <p class="result-time-notice" id="resultTimeNotice" role="status" hidden></p>
             <p class="result-budget" id="resultBudget" role="status" hidden></p>
             <p class="result-budget-disclaimer" id="resultBudgetDisclaimer" role="status" hidden></p>
+            <div class="result-summary" id="resultSummary" hidden></div>
+            <ul class="result-why" id="resultWhy" hidden></ul>
           </div>
+          <p class="result-place-disclaimer" id="resultPlaceDisclaimer" role="status" hidden></p>
+          <ol class="itinerary" id="itinerary"></ol>
           <div class="result-actions">
-            <button type="button" class="btn btn-outline pill" id="btnKakaoShare">
-              <span id="btnKakaoShareText">카톡 공유</span>
+            <button type="button" class="btn btn-main pill" id="btnRegenerate">
+              <span id="btnRegenerateText">다시 짜기</span>
             </button>
             <button type="button" class="btn btn-outline pill" id="btnCardShare">
               <span id="btnCardShareText">카드로 공유</span>
+            </button>
+            <button type="button" class="btn btn-outline pill" id="btnDownloadIcs">
+              <span id="btnDownloadIcsText">캘린더 추가</span>
             </button>
             <button type="button" class="btn btn-outline pill" id="btnOptimizeRoute">
               <span id="btnOptimizeRouteText">동선 최적화</span>
             </button>
           </div>
-          <p class="result-place-disclaimer" id="resultPlaceDisclaimer" role="status" hidden></p>
-          <ol class="itinerary" id="itinerary"></ol>
           <button type="button" class="btn btn-outline pill" id="btnReset"></button>
         </section>
       </div>
@@ -277,6 +324,30 @@
           <div class="loading-bar-fill" id="loadingBarFill"></div>
         </div>
       </div>
+    </div>
+
+    <footer class="site-footer">
+      <a href="./legal/terms.html" id="footerTermsLink">이용약관</a>
+      <span class="site-footer-sep" aria-hidden="true">·</span>
+      <a href="./legal/privacy.html" id="footerPrivacyLink">개인정보처리방침</a>
+      <span class="site-footer-sep" aria-hidden="true">·</span>
+      <span id="footerOsmNote">지도·장소: OpenStreetMap</span>
+    </footer>
+  </div>
+
+  <div class="location-consent-banner" id="locationConsentBanner" hidden role="dialog" aria-modal="true" aria-labelledby="locationConsentTitle">
+    <div class="location-consent-card">
+      <h2 class="location-consent-title" id="locationConsentTitle">위치 정보 이용 안내</h2>
+      <p class="location-consent-desc" id="locationConsentDesc">
+        “내 위치”로 일정을 만들려면 대략적인 현재 위치가 필요합니다. 위치는 주변 장소 검색·지도·날씨 표시에만 쓰이며, 동의 후에도 브라우저에서 위치 권한을 허용해야 합니다. 거부하면 지도에서 지역을 찍어 이용할 수 있어요.
+      </p>
+      <div class="location-consent-actions">
+        <button type="button" class="btn btn-main pill" id="btnLocationConsentAllow">동의하고 계속</button>
+        <button type="button" class="btn btn-outline pill" id="btnLocationConsentDeny">지도에서 찍기</button>
+      </div>
+      <p class="location-consent-links">
+        <a href="./legal/privacy.html" id="locationConsentPrivacyLink">개인정보처리방침</a>
+      </p>
     </div>
   </div>
 
@@ -304,7 +375,11 @@
       <p class="login-modal-desc" id="signupModalDesc"></p>
       <input type="email" class="login-modal-input" id="signupModalEmail" placeholder="" autocomplete="email" />
       <input type="password" class="login-modal-input" id="signupModalPassword" placeholder="" autocomplete="new-password" />
-      <input type="text" class="login-modal-input" id="signupModalName" placeholder="" maxlength="30" autocomplete="name" />
+                  <input type="text" class="login-modal-input" id="signupModalName" placeholder="" maxlength="30" autocomplete="name" />
+      <label class="legal-check" for="signupAgreeLegal">
+        <input type="checkbox" id="signupAgreeLegal" />
+        <span id="signupAgreeLegalText">이용약관 및 개인정보처리방침에 동의합니다.</span>
+      </label>
       <p class="login-modal-error" id="signupModalError" aria-live="polite"></p>
       <button type="button" class="btn btn-main pill login-modal-btn" id="signupModalSubmit"></button>
       <button type="button" class="login-modal-link" id="signupModalToLogin"></button>
@@ -497,14 +572,51 @@
   <div class="card-share-modal" id="cardShareModal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="cardShareModalTitle">
     <div class="card-share-backdrop" id="cardShareBackdrop"></div>
     <div class="card-share-card" id="cardShareCard">
-      <h2 class="card-share-title" id="cardShareModalTitle">오늘 우리의 데이트 기록</h2>
+      <div class="card-share-title-wrap">
+        <input type="text" class="card-share-title" id="cardShareModalTitle" maxlength="18" value="오늘 우리의 데이트 기록" aria-label="공유 제목" />
+        <span class="card-share-title-edit" aria-hidden="true">✎</span>
+      </div>
+      <p class="card-share-title-hint" id="cardShareTitleHint">눌러서 제목을 수정할 수 있어요 · 최대 18자</p>
       <div class="card-share-list" id="cardShareList"></div>
       <p class="card-share-hint" id="cardShareHint">아래 버튼으로 텍스트를 복사한 뒤 카톡에 붙여넣기 하거나, 이 화면을 캡처해서 공유해 보세요.</p>
       <div class="card-share-actions">
-        <button type="button" class="btn btn-main pill" id="btnCopyCardText">
+        <button type="button" class="btn btn-main pill" id="btnDownloadCardImage">
+          <span id="btnDownloadCardImageLabel">이미지 저장</span>
+        </button>
+        <button type="button" class="btn btn-outline pill" id="btnCopySharePlanLink">
+          <span id="btnCopySharePlanLinkLabel">링크 복사</span>
+        </button>
+        <button type="button" class="btn btn-outline pill" id="btnCopyCardText">
           <span id="btnCopyCardTextLabel">텍스트 복사</span>
         </button>
-        <button type="button" class="btn btn-outline pill" id="btnCloseCardShare">닫기</button>
+        <button type="button" class="btn btn-ghost pill" id="btnCloseCardShare">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="mobile-dock" id="mobileDock" aria-label="빠른 실행">
+    <button type="button" class="btn btn-main pill mobile-dock-cta" id="btnMobileDockCourse">
+      <span id="btnMobileDockCourseText">상세 설정</span>
+    </button>
+    <button type="button" class="btn btn-outline pill mobile-dock-secondary" id="btnMobileDockResult">
+      <span id="btnMobileDockResultText">내 계획표</span>
+    </button>
+  </div>
+
+  <!-- 모바일 전용: 내 계획표 패널 -->
+  <div class="mobile-plans-panel" id="mobilePlansPanel" hidden aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="mobilePlansTitle">
+    <div class="mobile-plans-sheet">
+      <header class="mobile-plans-header">
+        <h2 class="mobile-plans-title" id="mobilePlansTitle">내 계획표</h2>
+        <button type="button" class="btn btn-ghost pill" id="btnCloseMobilePlans">닫기</button>
+      </header>
+      <div class="mobile-plans-body">
+        <div class="mobile-plans-empty" id="mobilePlansEmpty">
+          <span class="empty-emoji" aria-hidden="true">📋</span>
+          <p id="mobilePlansEmptyText">아직 만든 계획 없음</p>
+          <p class="plans-empty-hint" id="mobilePlansEmptyHint">코스를 만들면 여기에 저장돼요</p>
+        </div>
+        <div class="mobile-plans-list" id="mobilePlansList" hidden></div>
       </div>
     </div>
   </div>
@@ -520,6 +632,8 @@
     window.SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxrb2Vndmdrd2ZmcHF3b3Fma3ZiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIzNDU1NDksImV4cCI6MjA4NzkyMTU0OX0.6bHCHGIs0Gwgv4RffyBkjBAdOg92FZKbw2KDRehoDMg';
   </script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <div class="app-toast" id="appToast" hidden role="status" aria-live="polite" aria-hidden="true"></div>
+
   <script src="app.js"></script>
   <script>
     (function() {
