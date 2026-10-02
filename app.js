@@ -71,6 +71,7 @@
       searchPlaceholder: '장소·주소 검색',
       searchBtn: '검색',
       errSearchNoResult: '검색한 장소를 찾지 못했어요. 이름이나 주소를 조금 더 구체적으로 입력해 주세요.',
+      errSearchPickOne: '여러 곳이 있어요. 목록이나 지도 핀에서 한 곳을 고른 뒤 일정 만들기를 눌러 주세요.',
       login: '로그인',
       logout: '로그아웃',
       signup: '회원가입',
@@ -406,6 +407,7 @@
       searchPlaceholder: 'Search place or address',
       searchBtn: 'Search',
       errSearchNoResult: 'Could not find that place. Try a more specific name or address.',
+      errSearchPickOne: 'Several places matched. Choose one from the list or map, then tap Create plan.',
       login: 'Log in',
       logout: 'Log out',
       signup: 'Sign up',
@@ -2297,6 +2299,34 @@
           pickMarker = null;
         }
       },
+      setSearchMarkers: function (points, onClick) {
+        this.clearSearchMarkers();
+        var self = this;
+        self._searchMarkers = [];
+        (points || []).forEach(function (p, i) {
+          var marker = new n.Marker({
+            position: new n.LatLng(p.lat, p.lng),
+            map: map,
+            title: p.label || ''
+          });
+          n.Event.addListener(marker, 'click', function () {
+            if (onClick) onClick(i);
+          });
+          self._searchMarkers.push(marker);
+        });
+      },
+      clearSearchMarkers: function () {
+        (this._searchMarkers || []).forEach(function (marker) { marker.setMap(null); });
+        this._searchMarkers = [];
+      },
+      fitSearchMarkers: function (points) {
+        if (!points || !points.length || !map) return;
+        var lat = 0;
+        var lng = 0;
+        points.forEach(function (p) { lat += p.lat; lng += p.lng; });
+        map.setCenter(new n.LatLng(lat / points.length, lng / points.length));
+        map.setZoom(points.length === 1 ? 16 : 11);
+      },
       clearPlaceMarkers: function () {
         if (placeMarkersLayer) {
           placeMarkersLayer.forEach(function (m) { m.setMap(null); });
@@ -2435,6 +2465,26 @@
           pickMarker = null;
         }
       },
+      setSearchMarkers: function (points, onClick) {
+        this.clearSearchMarkers();
+        var self = this;
+        self._searchMarkers = [];
+        (points || []).forEach(function (p, i) {
+          var marker = L.marker([p.lat, p.lng]).addTo(map);
+          marker.bindPopup(p.label || '');
+          marker.on('click', function () { if (onClick) onClick(i); });
+          self._searchMarkers.push(marker);
+        });
+      },
+      clearSearchMarkers: function () {
+        (this._searchMarkers || []).forEach(function (marker) { map.removeLayer(marker); });
+        this._searchMarkers = [];
+      },
+      fitSearchMarkers: function () {
+        if (!this._searchMarkers || !this._searchMarkers.length) return;
+        var group = L.featureGroup(this._searchMarkers);
+        map.fitBounds(group.getBounds().pad(0.25));
+      },
       clearPlaceMarkers: function () {
         if (placeMarkersLayer) {
           placeMarkersLayer.clearLayers();
@@ -2537,7 +2587,9 @@
           e.preventDefault();
           runSearch();
         }
+        if (e.key === 'Escape') hideSearchSuggest();
       });
+      bindSearchSuggest();
     }
     var btnSearch = $('btnSearch');
     if (btnSearch) btnSearch.addEventListener('click', runSearch);
@@ -2625,7 +2677,9 @@
     if (searchInput) {
       searchInput.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
+        if (e.key === 'Escape') hideSearchSuggest();
       });
+      bindSearchSuggest();
     }
     if ($('btnSearch')) $('btnSearch').addEventListener('click', runSearch);
     if (btnSaveCoursePreset) btnSaveCoursePreset.addEventListener('click', saveUserCoursePreset);
@@ -2671,44 +2725,238 @@
     });
   }
 
-  function searchPlaceQuery(q, onDone) {
-    var query = String(q || '').trim();
-    if (!query) {
-      if (onDone) onDone(null);
+  var searchHits = [];
+  var confirmedSearchQuery = '';
+  var searchSuggestTimer = null;
+  var searchFetchSeq = 0;
+
+  function nominatimSearch(q, limit) {
+    var url = 'https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(q) + '&format=json&addressdetails=1&limit=' + limit;
+    if (currentLang === 'ko') url += '&countrycodes=kr';
+    return fetch(url, { headers: { 'Accept-Language': currentLang === 'ko' ? 'ko' : 'en' } })
+      .then(function (res) { return res.json(); })
+      .then(function (data) { return Array.isArray(data) ? data : []; });
+  }
+
+  function nearestRecentDistance(item, recents) {
+    var lat = parseFloat(item.lat);
+    var lon = parseFloat(item.lon);
+    if (isNaN(lat) || isNaN(lon)) return Infinity;
+    var best = Infinity;
+    for (var i = 0; i < recents.length; i++) {
+      var dist = haversineMeters(
+        { lat: lat, lon: lon },
+        { lat: Number(recents[i].lat), lon: Number(recents[i].lng) }
+      );
+      if (dist < best) best = dist;
+    }
+    return best;
+  }
+
+  function rankSearchHitsByRecentRegions(list) {
+    var base = dedupeNearbySearchHits(list || []);
+    if (!currentUser || base.length < 2) return base.slice(0, 5);
+    var recents = [];
+    try { recents = JSON.parse(localStorage.getItem(RECENT_REGIONS_KEY) || '[]') || []; } catch (e) { recents = []; }
+    recents = recents.filter(function (r) { return r && r.lat != null && r.lng != null; });
+    if (!recents.length) return base.slice(0, 5);
+    return base.slice().sort(function (a, b) {
+      return nearestRecentDistance(a, recents) - nearestRecentDistance(b, recents);
+    }).slice(0, 5);
+  }
+
+  function dedupeNearbySearchHits(list) {
+    var kept = [];
+    var seen = {};
+    list.forEach(function (item) {
+      var lat = Number(item.lat);
+      var lon = Number(item.lon);
+      if (isNaN(lat) || isNaN(lon)) return;
+      var key = lat.toFixed(3) + ',' + lon.toFixed(3);
+      if (seen[key]) return;
+      seen[key] = true;
+      kept.push(item);
+    });
+    return kept;
+  }
+
+  function searchAddressParts(item) {
+    var addr = item.address || {};
+    var name = searchHitLabel(item);
+    var ordered = [
+      addr.neighbourhood, addr.quarter, addr.suburb, addr.city_district,
+      addr.borough, addr.road, addr.town, addr.city, addr.county
+    ];
+    String(item.display_name || '').split(',').forEach(function (part) { ordered.push(part.trim()); });
+    var seen = {};
+    var out = [];
+    ordered.forEach(function (part) {
+      if (!part || seen[part]) return;
+      if (part === name || name.indexOf(part) !== -1) return;
+      if (part === '대한민국' || part === 'South Korea' || part === '한국') return;
+      seen[part] = true;
+      out.push(part);
+    });
+    return out;
+  }
+
+  function buildSuggestLine(item, depth) {
+    var name = searchHitLabel(item);
+    var parts = searchAddressParts(item).slice(0, depth);
+    return parts.length ? name + ' · ' + parts.join(' ') : name;
+  }
+
+  function assignUniqueSuggestLines(list) {
+    var depth = 0;
+    var lines = [];
+    while (depth <= 4) {
+      lines = list.map(function (item) { return buildSuggestLine(item, depth); });
+      var counts = {};
+      lines.forEach(function (line) { counts[line] = (counts[line] || 0) + 1; });
+      if (lines.every(function (line) { return counts[line] === 1; })) break;
+      depth++;
+    }
+    list.forEach(function (item, i) { item._suggestLine = lines[i]; });
+    return list;
+  }
+
+  function searchHitLabel(item) {
+    var names = item.namedetails || {};
+    var name = names['name:ko'] || names.name || item.name || '';
+    if (!name && item.display_name) name = String(item.display_name).split(',')[0];
+    return name || item.display_name || '';
+  }
+
+  function hideSearchSuggest() {
+    var el = $('searchSuggest');
+    if (!el) return;
+    el.hidden = true;
+    el.innerHTML = '';
+    if (searchInput) searchInput.setAttribute('aria-expanded', 'false');
+  }
+
+  function renderSearchSuggest(items) {
+    var el = $('searchSuggest');
+    if (!el) return;
+    searchHits = items || [];
+    if (!searchHits.length) {
+      hideSearchSuggest();
       return;
     }
-    fetch('https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(query) + '&format=json&limit=1')
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        if (!data || !data[0]) {
-          showError(t('errSearchNoResult'));
-          if (onDone) onDone(null);
-          return;
-        }
-        var lat = parseFloat(data[0].lat);
-        var lon = parseFloat(data[0].lon);
-        if (isNaN(lat) || isNaN(lon)) {
-          showError(t('errSearchNoResult'));
-          if (onDone) onDone(null);
-          return;
-        }
-        searchCenter = { lat: lat, lng: lon };
-        var pickRadio = document.querySelector('input[name="quickRegion"][value="pick"]');
-        if (pickRadio) pickRadio.checked = true;
-        if (mapHint) mapHint.textContent = t('mapHintPick');
-        if (mapAdapter) {
-          if (map && typeof map.invalidateSize === 'function') map.invalidateSize();
-          mapAdapter.setView(lat, lon, 15);
-          mapAdapter.addPickMarker(lat, lon, data[0].display_name || query);
-        }
-        rememberRegion(lat, lon, query);
-        fetchFourDayForecast(lat, lon);
-        if (onDone) onDone(searchCenter);
-      })
-      .catch(function () {
-        showError(t('errSearchNoResult'));
-        if (onDone) onDone(null);
+    el.hidden = false;
+    if (searchInput) searchInput.setAttribute('aria-expanded', 'true');
+    assignUniqueSuggestLines(searchHits);
+    el.innerHTML = searchHits.map(function (item, i) {
+      var line = item._suggestLine || searchHitLabel(item);
+      return '<li><button type="button" class="search-suggest-item" data-index="' + i + '">' +
+        '<span class="search-suggest-icon" aria-hidden="true">🔍</span>' +
+        '<span class="search-suggest-name">' + escapeHtml(line) + '</span>' +
+        '</button></li>';
+    }).join('');
+    el.querySelectorAll('.search-suggest-item').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        chooseSearchHit(parseInt(btn.getAttribute('data-index'), 10), false);
       });
+    });
+  }
+
+  function showSearchHitsOnMap(items) {
+    openDetailedSettings();
+    var points = items.map(function (item) {
+      return { lat: parseFloat(item.lat), lng: parseFloat(item.lon), label: searchHitLabel(item) };
+    }).filter(function (p) { return !isNaN(p.lat) && !isNaN(p.lng); });
+    if (!mapAdapter) return;
+    if (mapAdapter.removePickMarker) mapAdapter.removePickMarker();
+    if (mapAdapter.setSearchMarkers) mapAdapter.setSearchMarkers(points, function (index) { chooseSearchHit(index, false); });
+    if (mapAdapter.fitSearchMarkers) mapAdapter.fitSearchMarkers(points);
+    setTimeout(refreshMainMapAfterShow, 200);
+  }
+
+  function chooseSearchHit(index, thenGenerate) {
+    var item = searchHits[index];
+    if (!item) return;
+    var lat = parseFloat(item.lat);
+    var lon = parseFloat(item.lon);
+    if (isNaN(lat) || isNaN(lon)) return;
+    var label = searchHitLabel(item);
+    searchCenter = { lat: lat, lng: lon };
+    rememberRegion(lat, lon, item._suggestLine || label);
+    if (searchInput) searchInput.value = item._suggestLine || label;
+    confirmedSearchQuery = searchInput ? searchInput.value : label;
+    var pickRadio = document.querySelector('input[name="quickRegion"][value="pick"]');
+    if (pickRadio) pickRadio.checked = true;
+    if (mapHint) mapHint.textContent = t('mapHintPick');
+    openDetailedSettings();
+    if (mapAdapter) {
+      if (mapAdapter.clearSearchMarkers) mapAdapter.clearSearchMarkers();
+      if (mapAdapter.setView) mapAdapter.setView(lat, lon, 16);
+      if (mapAdapter.addPickMarker) mapAdapter.addPickMarker(lat, lon, item._suggestLine || label);
+    }
+    fetchFourDayForecast(lat, lon);
+    hideSearchSuggest();
+    if (thenGenerate) doGeneratePlan(searchCenter);
+  }
+
+  function recentRegionsMatchingQuery(q) {
+    var query = String(q || '').replace(/\s+/g, '').toLowerCase();
+    if (!query || query.length < 2) return [];
+    var recents = [];
+    try { recents = JSON.parse(localStorage.getItem(RECENT_REGIONS_KEY) || '[]') || []; } catch (e) { recents = []; }
+    return recents.filter(function (r) {
+      if (!r || r.lat == null || r.lng == null) return false;
+      var label = String(r.label || '').replace(/\s+/g, '').toLowerCase();
+      var generic = String(t('recentPickedHere') || '').replace(/\s+/g, '').toLowerCase();
+      if (!label || label === generic) return false;
+      return label.indexOf(query) !== -1;
+    }).map(function (r) {
+      return {
+        lat: String(r.lat),
+        lon: String(r.lng),
+        name: r.label,
+        display_name: r.label,
+        namedetails: { name: r.label },
+        address: {},
+        _suggestLine: r.label
+      };
+    });
+  }
+
+  function lookupSearchPlaces(q, opts) {
+    opts = opts || {};
+    var seq = ++searchFetchSeq;
+    return nominatimSearch(q, 12).then(function (list) {
+      if (seq !== searchFetchSeq) return;
+      list = recentRegionsMatchingQuery(q).concat(list);
+      list = rankSearchHitsByRecentRegions(list);
+      if (!list.length) {
+        hideSearchSuggest();
+        if (opts.showError) showError(t('errSearchNoResult'));
+        return;
+      }
+      renderSearchSuggest(list);
+      if (opts.showOnMap) showSearchHitsOnMap(list);
+      if (list.length === 1 && opts.commitSingle) {
+        chooseSearchHit(0, !!opts.thenGenerate);
+        return;
+      }
+      if (list.length > 1 && opts.thenGenerate) showError(t('errSearchPickOne'));
+    }).catch(function () {
+      if (seq !== searchFetchSeq) return;
+      if (opts.showError) showError(t('errSearchNoResult'));
+    });
+  }
+
+  function scheduleSearchSuggest() {
+    var q = searchInput && searchInput.value.trim();
+    confirmedSearchQuery = '';
+    if (searchSuggestTimer) clearTimeout(searchSuggestTimer);
+    if (!q || q.length < 2) {
+      hideSearchSuggest();
+      return;
+    }
+    searchSuggestTimer = setTimeout(function () {
+      lookupSearchPlaces(q, { showOnMap: false, showError: false, commitSingle: false });
+    }, 450);
   }
 
   function runSearch() {
@@ -2717,12 +2965,23 @@
     var wasSectionHidden = advancedSection && advancedSection.hidden;
     if (wasSectionHidden) {
       advancedSection.hidden = false;
+      setAdvancedDetailsOpen(true);
       advancedSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
       refreshMainMapAfterShow();
       setTimeout(runSearch, 180);
       return;
     }
-    searchPlaceQuery(q);
+    lookupSearchPlaces(q, { showOnMap: true, showError: true, commitSingle: true, thenGenerate: false });
+  }
+
+  function bindSearchSuggest() {
+    if (!searchInput || searchInput.getAttribute('data-suggest-bound') === '1') return;
+    searchInput.setAttribute('data-suggest-bound', '1');
+    searchInput.addEventListener('input', scheduleSearchSuggest);
+    document.addEventListener('click', function (e) {
+      var box = document.querySelector('.search-box');
+      if (box && !box.contains(e.target)) hideSearchSuggest();
+    });
   }
 
   function goToMyLocation() {
@@ -3136,17 +3395,52 @@
     }, 280);
   }
 
+  function fetchPlacesViaNetlify(center, radiusMeters) {
+    var lat = center && center.lat;
+    var lng = center && (center.lng != null ? center.lng : center.lon);
+    if (lat == null || lng == null) return Promise.resolve(null);
+    var radius = Math.min(8000, Math.max(100, Math.round(radiusMeters || 1000)));
+    var url = '/.netlify/functions/places?lat=' + encodeURIComponent(lat) + '&lng=' + encodeURIComponent(lng) + '&radius=' + encodeURIComponent(radius);
+    var ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timer = setTimeout(function () {
+      if (ac) ac.abort();
+    }, 12000);
+    return fetch(url, { signal: ac ? ac.signal : undefined })
+      .then(function (res) {
+        if (!res.ok) throw new Error('places');
+        return res.json();
+      })
+      .then(function (data) {
+        return (data && data.elements && data.elements.length) ? data.elements : null;
+      })
+      .catch(function () { return null; })
+      .finally(function () { clearTimeout(timer); });
+  }
+
   async function overpassQuery(center, radiusMeters) {
     var cacheKey = placeCacheKey(center, radiusMeters);
     var fresh = getCachedPlaceElements(cacheKey, false);
     if (fresh) return fresh.elements;
+
+    var viaNetlify = await fetchPlacesViaNetlify(center, radiusMeters);
+    if (viaNetlify && viaNetlify.length) {
+      putCachedPlaceElements(cacheKey, viaNetlify);
+      return viaNetlify;
+    }
+    setLoadingText('loadingTextRetry');
+    startLoadingProgressDrift(Math.max(loadingProgressValue, 40), 78, 9000);
+    viaNetlify = await fetchPlacesViaNetlify(center, radiusMeters);
+    if (viaNetlify && viaNetlify.length) {
+      putCachedPlaceElements(cacheKey, viaNetlify);
+      return viaNetlify;
+    }
 
     var lat = center.lat;
     var lng = center.lng != null ? center.lng : center.lon;
     var r = Math.min(Math.max(radiusMeters, 100), 8000);
     // nwr + tags만 요청해 응답을 가볍게. 결과 상한으로 서버 부담 감소.
     var query = [
-      '[out:json][timeout:12];',
+      '[out:json][timeout:8];',
       '(',
       'nwr["amenity"~"restaurant|cafe|fast_food|bar|ice_cream"](around:' + r + ',' + lat + ',' + lng + ');',
       'nwr["tourism"~"museum|gallery|theme_park|attraction"](around:' + r + ',' + lat + ',' + lng + ');',
@@ -3156,27 +3450,35 @@
       'out center tags 180;',
     ].join('');
     var body = 'data=' + encodeURIComponent(query);
-    var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     var settled = false;
     var lastError = null;
+    var controllers = [];
 
     function fetchOne(url) {
+      var ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      if (ac) controllers.push(ac);
+      var timer = setTimeout(function () {
+        if (ac) ac.abort();
+      }, 9000);
       return fetch(url, {
         method: 'POST',
         body: body,
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        signal: controller ? controller.signal : undefined,
+        signal: ac ? ac.signal : undefined,
       }).then(function (res) {
         if (!res.ok) throw new Error('장소 검색 실패 (' + res.status + ')');
         return res.json();
       }).then(function (json) {
         if (settled) return null;
         var els = json.elements || [];
-        // 빈 응답은 성공으로 확정하지 않음 (다른 미러가 채울 수 있음)
         if (!els.length) return null;
         settled = true;
-        if (controller) controller.abort();
+        controllers.forEach(function (c) {
+          try { c.abort(); } catch (e) { }
+        });
         return els;
+      }).finally(function () {
+        clearTimeout(timer);
       });
     }
 
@@ -3189,7 +3491,7 @@
             resolve(null);
             return;
           }
-          if (idx > 0) setLoadingProgress(Math.min(50, 12 + idx * 10), 'loadingTextRetry', 'loadingSubSearch');
+          if (idx > 0) setLoadingText('loadingTextRetry');
           fetchOne(url).then(resolve).catch(function (e) {
             if (!settled) lastError = e;
             resolve(null);
@@ -4922,16 +5224,13 @@
 
   function generatePlan() {
     var pendingQuery = searchInput && searchInput.value.trim();
-    if (pendingQuery) {
+    if (pendingQuery && pendingQuery !== confirmedSearchQuery) {
       if (advancedSection && advancedSection.hidden) {
         advancedSection.hidden = false;
         setAdvancedDetailsOpen(true);
         refreshMainMapAfterShow();
       }
-      searchPlaceQuery(pendingQuery, function (center) {
-        if (!center) return;
-        doGeneratePlan(center);
-      });
+      lookupSearchPlaces(pendingQuery, { showOnMap: true, showError: true, commitSingle: true, thenGenerate: true });
       return;
     }
     if (isQuickRegionPick()) {
@@ -5006,7 +5305,7 @@
     (async function () {
       try {
         setLoadingProgress(8, 'loadingText', 'loadingSubSearch');
-        startLoadingProgressDrift(8, 52, 6000);
+        startLoadingProgressDrift(8, 78, 9000);
         overpassQuery._usedStaleCache = false;
         var elements = await overpassQuery(center, radiusMeters);
         var usedStalePlaceCache = !!overpassQuery._usedStaleCache;

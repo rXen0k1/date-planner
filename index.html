@@ -59,10 +59,13 @@
       <nav class="nav-tabs" role="tablist">
         <button type="button" class="nav-tab active" data-tab="course" id="tabCourse" aria-selected="true">코스 뚝딱</button>
       </nav>
+      <div class="search-box">
       <div class="search-wrap">
         <span class="search-icon" aria-hidden="true">🔍</span>
-        <input type="search" class="search-input" id="searchInput" placeholder="" autocomplete="off" />
+        <input type="search" class="search-input" id="searchInput" placeholder="" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="searchSuggest" aria-expanded="false" />
         <button type="button" class="search-btn" id="btnSearch" title="검색" aria-label="검색">검색</button>
+      </div>
+      <ul class="search-suggest" id="searchSuggest" hidden role="listbox"></ul>
       </div>
       <div class="topbar-right">
         <div class="lang-switch" role="group" aria-label="언어 선택">

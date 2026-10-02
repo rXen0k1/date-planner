@@ -121,10 +121,17 @@ body::after {
   background-position: 100% 0;
 }
 
-.search-wrap {
+.search-box {
+  position: relative;
   flex: 1;
   max-width: 380px;
   margin: 0 auto;
+}
+
+.search-wrap {
+  width: 100%;
+  max-width: none;
+  margin: 0;
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -133,6 +140,58 @@ body::after {
   border-radius: var(--radius-full);
   padding: 0.5rem 1rem;
   transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.search-suggest {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  margin: 0;
+  padding: 0.35rem;
+  list-style: none;
+  background: rgba(22, 22, 30, 0.98);
+  border: 1px solid rgba(167, 139, 250, 0.35);
+  border-radius: 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  max-height: 320px;
+  overflow: auto;
+}
+
+.search-suggest-item {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  text-align: left;
+  font-family: var(--font);
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  padding: 0.7rem 0.75rem;
+  cursor: pointer;
+}
+
+.search-suggest-item:hover,
+.search-suggest-item.is-active {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.search-suggest-icon {
+  font-size: 0.85rem;
+  opacity: 0.65;
+  flex-shrink: 0;
+}
+
+.search-suggest-name {
+  font-size: 0.95rem;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .search-wrap:focus-within {
@@ -853,7 +912,7 @@ html[lang="en"] #labelBudget::after {
     flex-wrap: wrap;
   }
 
-  .search-wrap {
+  .search-box {
     order: 3;
     width: 100%;
     max-width: none;
@@ -1892,12 +1951,14 @@ button.time-preset-chip.is-on {
 .recent-regions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 0.35rem;
   margin-top: 0.55rem;
 }
 
 .recent-regions-label {
   flex: 1 0 100%;
+  text-align: center;
   font-size: 0.75rem;
   color: var(--text-muted);
 }
@@ -3389,7 +3450,7 @@ body.mobile-plans-open {
   .nav-tabs {
     display: none;
   }
-  .search-wrap {
+  .search-box {
     order: 3;
   }
   .hero-title {
