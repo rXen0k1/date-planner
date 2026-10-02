@@ -1396,9 +1396,10 @@
     return data;
   }
 
-  function applyCoursePresetData(data) {
+  function applyCoursePresetData(data, opts) {
     if (!data || typeof data !== 'object') return;
-    if (data.quickRegion !== undefined) {
+    opts = opts || {};
+    if (!opts.skipRegion && data.quickRegion !== undefined) {
       var qr = document.querySelector('input[name="quickRegion"][value="' + (data.quickRegion || 'my') + '"]');
       if (qr) qr.checked = true;
       if (data.quickRegion === 'pick' && data.searchCenterLat != null && data.searchCenterLng != null) {
@@ -1881,7 +1882,7 @@
       var raw = localStorage.getItem(key);
       if (!raw) return;
       var data = JSON.parse(raw);
-      if (data && typeof data === 'object') applyCoursePresetData(data);
+      if (data && typeof data === 'object') applyCoursePresetData(data, { skipRegion: true });
     } catch (e) { }
   }
 
