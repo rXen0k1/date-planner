@@ -57,6 +57,8 @@
 
   const PREF_STORAGE_PREFIX = 'date-planner-prefs-';
   const PLANS_STORAGE_PREFIX = 'date-planner-plans-';
+  const GUEST_PLANS_KEY = PLANS_STORAGE_PREFIX + 'guest';
+  const GUEST_DRAFT_KEY = PREF_STORAGE_PREFIX + 'guest-draft';
   const LOCATION_CONSENT_KEY = 'auvia-location-consent';
   let currentUser = null;       // { id, email } 또는 null (Supabase 로그인 시)
   let currentUserName = null;   // 화면에 표시할 이름(이메일 또는 닉네임)
@@ -71,7 +73,7 @@
       searchPlaceholder: '장소·주소 검색',
       searchBtn: '검색',
       errSearchNoResult: '검색한 장소를 찾지 못했어요. 이름이나 주소를 조금 더 구체적으로 입력해 주세요.',
-      errSearchPickOne: '여러 곳이 있어요. 목록이나 지도 핀에서 한 곳을 고른 뒤 일정 만들기를 눌러 주세요.',
+      errSearchPickOne: '여러 곳이 검색됐어요. 목록이나 지도에서 한 곳을 고르면 바로 일정을 만들어요.',
       login: '로그인',
       logout: '로그아웃',
       signup: '회원가입',
@@ -117,7 +119,7 @@
       planCardTitle: '방금 만든 계획',
       labelPlanName: '계획 이름',
       planNamePlaceholder: '예: 주말 한강 데이트',
-      planNameHint: '비워 두면 「방금 만든 계획」으로 저장돼요',
+      planNameHint: '비워 두면 「방금 만든 계획1」처럼 번호가 붙어 저장돼요',
       editPlanNamePrompt: '계획 이름을 입력하세요',
       btnEdit: '수정',
       btnDelete: '삭제',
@@ -401,13 +403,30 @@
       errGenerateHint: '잠시 후 다시 시도하거나, 네트워크 상태를 확인해 주세요.',
       toastDismiss: '닫기',
       summaryBudgetFit: '예산 대비 약 %s%',
+      loadingCancel: '취소',
+      planCancelled: '일정 만들기를 취소했어요.',
+      recoveryWiden: '2km로 다시',
+      recoveryRelax: '필터 완화 후 다시',
+      heroWeatherLabel: '언제 갈까요?',
+      hoursAlways: '24시간 영업',
+      hoursClosed: '휴무',
+      hoursClosedToday: '오늘은 휴무',
+      hoursToday: '영업',
+      recoveryAsIs: '이대로 하기',
+      regionGenerateTitle: '이 지역으로 일정을 만들까요?',
+      regionGenerateHint: '지금 설정된 가격대·인기도·시간으로 바로 만들어요. 바꾸려면 「설정 바꾸기」를 눌러 주세요.',
+      regionGenerateConfirm: '이대로 만들기',
+      regionGenerateSettings: '설정 바꾸기',
+      regionGenerateCancel: '취소',
+      regionGenerateStyleLabel: '적용될 설정',
+      regionGenerateWarn: '지금 설정된 계획 스타일(가격대·인기도·코스 스타일·시간·반경)이 그대로 반영됩니다. 이대로 만들까요?',
     },
     en: {
       brand: 'Date Planner',
       searchPlaceholder: 'Search place or address',
       searchBtn: 'Search',
       errSearchNoResult: 'Could not find that place. Try a more specific name or address.',
-      errSearchPickOne: 'Several places matched. Choose one from the list or map, then tap Create plan.',
+      errSearchPickOne: 'Several places matched. Pick one from the list or map to create a plan right away.',
       login: 'Log in',
       logout: 'Log out',
       signup: 'Sign up',
@@ -453,7 +472,7 @@
       planCardTitle: 'Latest plan',
       labelPlanName: 'Plan name',
       planNamePlaceholder: 'e.g. Weekend riverside date',
-      planNameHint: 'Leave blank to save as "Latest plan"',
+      planNameHint: 'Leave blank to save as "Latest plan1", "Latest plan2", …',
       editPlanNamePrompt: 'Enter a plan name',
       btnEdit: 'Edit',
       btnDelete: 'Delete',
@@ -738,6 +757,23 @@
       errGenerateHint: 'Please try again in a moment, or check your network.',
       toastDismiss: 'Dismiss',
       summaryBudgetFit: '~%s% of budget',
+      loadingCancel: 'Cancel',
+      planCancelled: 'Plan generation cancelled.',
+      recoveryWiden: 'Retry at 2km',
+      recoveryRelax: 'Relax filters & retry',
+      heroWeatherLabel: 'Which day?',
+      hoursAlways: 'Open 24 hours',
+      hoursClosed: 'Closed',
+      hoursClosedToday: 'Closed today',
+      hoursToday: 'Hours',
+      recoveryAsIs: 'Try as-is',
+      regionGenerateTitle: 'Create a plan for this area?',
+      regionGenerateHint: 'We’ll use your current price, popularity, and time settings. Tap Change settings to customize first.',
+      regionGenerateConfirm: 'Create as-is',
+      regionGenerateSettings: 'Change settings',
+      regionGenerateCancel: 'Cancel',
+      regionGenerateStyleLabel: 'Settings to apply',
+      regionGenerateWarn: 'Your current plan style (price, popularity, course style, time, radius) will be applied as-is. Create the plan now?',
     },
   };
 
@@ -919,6 +955,15 @@
     if ($('mobilePlansEmptyText')) $('mobilePlansEmptyText').textContent = t('plansEmptyText');
     if ($('mobilePlansEmptyHint')) $('mobilePlansEmptyHint').textContent = t('plansEmptyHint');
     set('weatherCardTitle', t('weatherCardTitle'));
+    if ($('btnCancelLoadingText')) $('btnCancelLoadingText').textContent = t('loadingCancel');
+    if ($('btnRecoveryWidenText')) $('btnRecoveryWidenText').textContent = t('recoveryWiden');
+    if ($('btnRecoveryRelaxText')) $('btnRecoveryRelaxText').textContent = t('recoveryRelax');
+    if ($('btnRecoveryAsIsText')) $('btnRecoveryAsIsText').textContent = t('recoveryAsIs');
+    if ($('regionGenerateTitle')) $('regionGenerateTitle').textContent = t('regionGenerateTitle');
+    if ($('regionGenerateHint')) $('regionGenerateHint').textContent = t('regionGenerateHint');
+    if ($('btnRegionGenerateConfirmText')) $('btnRegionGenerateConfirmText').textContent = t('regionGenerateConfirm');
+    if ($('btnRegionGenerateSettingsText')) $('btnRegionGenerateSettingsText').textContent = t('regionGenerateSettings');
+    if ($('btnRegionGenerateCancel')) $('btnRegionGenerateCancel').textContent = t('regionGenerateCancel');
     if ($('weatherCardPrompt')) $('weatherCardPrompt').textContent = t('weatherSelectDayPrompt');
     (function () {
       var dc = getDefaultWeatherCenter();
@@ -1094,6 +1139,9 @@
       loadSavedPlansLocal();
       if (savedPresetList) savedPresetList.hidden = true;
       if (btnLoadPresetToggle) btnLoadPresetToggle.setAttribute('aria-expanded', 'false');
+    } else {
+      loadGuestDraft();
+      loadSavedPlansLocal();
     }
   }
 
@@ -1197,8 +1245,8 @@
   }
 
   function getPlansStorageKey() {
-    if (!currentUser || !currentUser.id) return null;
-    return PLANS_STORAGE_PREFIX + currentUser.id;
+    if (currentUser && currentUser.id) return PLANS_STORAGE_PREFIX + currentUser.id;
+    return GUEST_PLANS_KEY;
   }
 
   function persistSavedPlansLocal() {
@@ -1214,13 +1262,64 @@
     if (!key) return;
     try {
       var raw = localStorage.getItem(key);
-      if (!raw) return;
+      if (!raw) {
+        savedPlans = [];
+        renderSavedPlansList();
+        return;
+      }
       var list = JSON.parse(raw);
       if (Array.isArray(list)) {
         savedPlans = list;
         renderSavedPlansList();
       }
     } catch (e) { }
+  }
+
+  function persistSettingsDraft() {
+    // 로그인 사용자만 설정 자동 기억 (비로그인은 저장하지 않음)
+    if (!currentUser || !currentUser.id) return;
+    var key = getCurrentUserPrefsKey();
+    if (!key) return;
+    try {
+      var data = getCoursePresetData();
+      // 예산·계획 이름·날씨 날짜는 기억하지 않음
+      delete data.budgetInput;
+      delete data.planNameInput;
+      delete data.selectedForecastDayIndex;
+      localStorage.setItem(key, JSON.stringify(data));
+      if (persistSettingsDraft._cloudTimer) clearTimeout(persistSettingsDraft._cloudTimer);
+      persistSettingsDraft._cloudTimer = setTimeout(function () {
+        if (!currentUser) return;
+        upsertPresetCloud('default', 'default', data);
+      }, 1800);
+    } catch (e) { }
+  }
+
+  // 이전 호출부 호환
+  function persistGuestDraft() {
+    persistSettingsDraft();
+  }
+
+  function loadGuestDraft() {
+    // 비로그인 초안은 쓰지 않음 — 로그인 시 loadUserCoursePreset 사용
+  }
+
+  function bindGuestDraftAutosave() {
+    if (bindGuestDraftAutosave._bound) return;
+    bindGuestDraftAutosave._bound = true;
+    function schedule() {
+      if (!currentUser) return;
+      if (persistSettingsDraft._timer) clearTimeout(persistSettingsDraft._timer);
+      persistSettingsDraft._timer = setTimeout(persistSettingsDraft, 350);
+    }
+    document.addEventListener('change', function (e) {
+      if (!e.target || !currentUser) return;
+      if (e.target.closest && (e.target.closest('.quick-course-form') || e.target.closest('#advancedSection'))) schedule();
+    });
+    document.addEventListener('input', function (e) {
+      if (!e.target || !currentUser) return;
+      if (e.target.id === 'startTime' || e.target.id === 'endTime' || e.target.id === 'radiusCustom') schedule();
+    });
   }
 
   function renderSavedPlansList() {
@@ -2581,16 +2680,7 @@
       syncTransportCarState();
     }
 
-    if (searchInput) {
-      searchInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          runSearch();
-        }
-        if (e.key === 'Escape') hideSearchSuggest();
-      });
-      bindSearchSuggest();
-    }
+    if (searchInput) bindSearchSuggest();
     var btnSearch = $('btnSearch');
     if (btnSearch) btnSearch.addEventListener('click', runSearch);
     if (btnSaveCoursePreset) btnSaveCoursePreset.addEventListener('click', saveUserCoursePreset);
@@ -2674,13 +2764,7 @@
       hasCarCheckbox.addEventListener('change', syncTransportCarState);
       syncTransportCarState();
     }
-    if (searchInput) {
-      searchInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
-        if (e.key === 'Escape') hideSearchSuggest();
-      });
-      bindSearchSuggest();
-    }
+    if (searchInput) bindSearchSuggest();
     if ($('btnSearch')) $('btnSearch').addEventListener('click', runSearch);
     if (btnSaveCoursePreset) btnSaveCoursePreset.addEventListener('click', saveUserCoursePreset);
     if (btnLogin) {
@@ -2728,6 +2812,11 @@
   var searchHits = [];
   var confirmedSearchQuery = '';
   var searchSuggestTimer = null;
+  var searchSuggestActiveIndex = -1;
+  var liveAbortControllers = [];
+  var planCancelRequested = false;
+  var planGenerateToken = 0;
+  var lastGenerateCenter = null;
   var searchFetchSeq = 0;
 
   function nominatimSearch(q, limit) {
@@ -2832,13 +2921,31 @@
     if (!el) return;
     el.hidden = true;
     el.innerHTML = '';
+    searchSuggestActiveIndex = -1;
     if (searchInput) searchInput.setAttribute('aria-expanded', 'false');
+  }
+
+  function setSearchSuggestActive(index) {
+    var el = $('searchSuggest');
+    if (!el || el.hidden) return;
+    var items = el.querySelectorAll('.search-suggest-item');
+    if (!items.length) return;
+    if (index < 0) index = items.length - 1;
+    if (index >= items.length) index = 0;
+    searchSuggestActiveIndex = index;
+    items.forEach(function (btn, i) {
+      btn.classList.toggle('is-active', i === index);
+    });
+    if (items[index] && items[index].scrollIntoView) {
+      items[index].scrollIntoView({ block: 'nearest' });
+    }
   }
 
   function renderSearchSuggest(items) {
     var el = $('searchSuggest');
     if (!el) return;
     searchHits = items || [];
+    searchSuggestActiveIndex = -1;
     if (!searchHits.length) {
       hideSearchSuggest();
       return;
@@ -2848,14 +2955,17 @@
     assignUniqueSuggestLines(searchHits);
     el.innerHTML = searchHits.map(function (item, i) {
       var line = item._suggestLine || searchHitLabel(item);
-      return '<li><button type="button" class="search-suggest-item" data-index="' + i + '">' +
+      return '<li><button type="button" class="search-suggest-item" data-index="' + i + '" role="option">' +
         '<span class="search-suggest-icon" aria-hidden="true">🔍</span>' +
         '<span class="search-suggest-name">' + escapeHtml(line) + '</span>' +
         '</button></li>';
     }).join('');
     el.querySelectorAll('.search-suggest-item').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        chooseSearchHit(parseInt(btn.getAttribute('data-index'), 10), false);
+        chooseSearchHit(parseInt(btn.getAttribute('data-index'), 10), true);
+      });
+      btn.addEventListener('mouseenter', function () {
+        setSearchSuggestActive(parseInt(btn.getAttribute('data-index'), 10));
       });
     });
   }
@@ -2863,11 +2973,11 @@
   function showSearchHitsOnMap(items) {
     openDetailedSettings();
     var points = items.map(function (item) {
-      return { lat: parseFloat(item.lat), lng: parseFloat(item.lon), label: searchHitLabel(item) };
+      return { lat: parseFloat(item.lat), lng: parseFloat(item.lon), label: item._suggestLine || searchHitLabel(item) };
     }).filter(function (p) { return !isNaN(p.lat) && !isNaN(p.lng); });
     if (!mapAdapter) return;
     if (mapAdapter.removePickMarker) mapAdapter.removePickMarker();
-    if (mapAdapter.setSearchMarkers) mapAdapter.setSearchMarkers(points, function (index) { chooseSearchHit(index, false); });
+    if (mapAdapter.setSearchMarkers) mapAdapter.setSearchMarkers(points, function (index) { chooseSearchHit(index, true); });
     if (mapAdapter.fitSearchMarkers) mapAdapter.fitSearchMarkers(points);
     setTimeout(refreshMainMapAfterShow, 200);
   }
@@ -2893,8 +3003,9 @@
       if (mapAdapter.addPickMarker) mapAdapter.addPickMarker(lat, lon, item._suggestLine || label);
     }
     fetchFourDayForecast(lat, lon);
+    persistGuestDraft();
     hideSearchSuggest();
-    if (thenGenerate) doGeneratePlan(searchCenter);
+    if (thenGenerate) askGenerateAtRegion(searchCenter, item._suggestLine || label);
   }
 
   function recentRegionsMatchingQuery(q) {
@@ -2971,13 +3082,41 @@
       setTimeout(runSearch, 180);
       return;
     }
-    lookupSearchPlaces(q, { showOnMap: true, showError: true, commitSingle: true, thenGenerate: false });
+    lookupSearchPlaces(q, { showOnMap: true, showError: true, commitSingle: true, thenGenerate: true });
   }
 
   function bindSearchSuggest() {
     if (!searchInput || searchInput.getAttribute('data-suggest-bound') === '1') return;
     searchInput.setAttribute('data-suggest-bound', '1');
     searchInput.addEventListener('input', scheduleSearchSuggest);
+    searchInput.addEventListener('keydown', function (e) {
+      var suggestEl = $('searchSuggest');
+      var open = suggestEl && !suggestEl.hidden && searchHits && searchHits.length;
+      if (e.key === 'ArrowDown' && open) {
+        e.preventDefault();
+        setSearchSuggestActive(searchSuggestActiveIndex < 0 ? 0 : searchSuggestActiveIndex + 1);
+        return;
+      }
+      if (e.key === 'ArrowUp' && open) {
+        e.preventDefault();
+        setSearchSuggestActive(searchSuggestActiveIndex < 0 ? searchHits.length - 1 : searchSuggestActiveIndex - 1);
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (open && searchSuggestActiveIndex >= 0) {
+          chooseSearchHit(searchSuggestActiveIndex, true);
+          return;
+        }
+        if (open && searchHits.length === 1) {
+          chooseSearchHit(0, true);
+          return;
+        }
+        runSearch();
+        return;
+      }
+      if (e.key === 'Escape') hideSearchSuggest();
+    });
     document.addEventListener('click', function (e) {
       var box = document.querySelector('.search-box');
       if (box && !box.contains(e.target)) hideSearchSuggest();
@@ -3163,6 +3302,39 @@
     return month + '/' + day + ' (' + week + ')';
   }
 
+  function buildWeatherDayButtonHtml(day, i) {
+    var label = i === 0 ? t('dayToday') : (i === 1 ? t('dayTomorrow') : formatForecastDate(day.date));
+    var sel = i === selectedForecastDayIndex ? ' is-selected' : '';
+    var icon = day.icon || (day.theme === 'rain' ? '🌧️' : '☀️');
+    var cond = day.labelKey ? t(day.labelKey) : (day.theme === 'rain' ? t('wmoRain') : t('wmoClear'));
+    var tempStr = '';
+    if (day.tempMax != null && day.tempMin != null) {
+      tempStr = Math.round(day.tempMin) + '~' + Math.round(day.tempMax) + t('tempUnit');
+    } else if (day.tempMax != null) {
+      tempStr = Math.round(day.tempMax) + t('tempUnit');
+    }
+    return '<button type="button" class="weather-day-btn' + sel + '" data-index="' + i + '">' +
+      '<span class="weather-day-icon">' + icon + '</span>' +
+      '<span class="weather-day-info">' +
+        '<span class="weather-day-label">' + escapeHtml(label) + '</span>' +
+        '<span class="weather-day-cond">' + escapeHtml(cond) + '</span>' +
+        (tempStr ? '<span class="weather-day-temp">' + escapeHtml(tempStr) + '</span>' : '') +
+      '</span>' +
+      '</button>';
+  }
+
+  function bindWeatherDayButtons(container, lat, lng) {
+    if (!container) return;
+    container.querySelectorAll('.weather-day-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        selectedForecastDayIndex = parseInt(btn.getAttribute('data-index'), 10);
+        if (!isNaN(selectedForecastDayIndex)) {
+          renderFourDayWeatherCard(lat, lng);
+        }
+      });
+    });
+  }
+
   function renderFourDayWeatherCard(lat, lng) {
     var wrap = document.getElementById('weatherCardWrap');
     var title = document.getElementById('weatherCardTitle');
@@ -3179,32 +3351,8 @@
       if (summary) summary.textContent = '';
       return;
     }
-    daysWrap.innerHTML = fourDayForecast.map(function (day, i) {
-      var label = i === 0 ? t('dayToday') : (i === 1 ? t('dayTomorrow') : formatForecastDate(day.date));
-      var sel = i === selectedForecastDayIndex ? ' is-selected' : '';
-      var icon = day.icon || (day.theme === 'rain' ? '🌧️' : '☀️');
-      var cond = day.labelKey ? t(day.labelKey) : (day.theme === 'rain' ? t('wmoRain') : t('wmoClear'));
-      var tempStr = '';
-      if (day.tempMax != null && day.tempMin != null) {
-        tempStr = Math.round(day.tempMin) + '~' + Math.round(day.tempMax) + t('tempUnit');
-      } else if (day.tempMax != null) {
-        tempStr = Math.round(day.tempMax) + t('tempUnit');
-      }
-      return '<button type="button" class="weather-day-btn' + sel + '" data-index="' + i + '">' +
-        '<span class="weather-day-icon">' + icon + '</span>' +
-        '<span class="weather-day-info">' +
-          '<span class="weather-day-label">' + escapeHtml(label) + '</span>' +
-          '<span class="weather-day-cond">' + escapeHtml(cond) + '</span>' +
-          (tempStr ? '<span class="weather-day-temp">' + escapeHtml(tempStr) + '</span>' : '') +
-        '</span>' +
-        '</button>';
-    }).join('');
-    daysWrap.querySelectorAll('.weather-day-btn').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        selectedForecastDayIndex = parseInt(btn.getAttribute('data-index'), 10);
-        if (!isNaN(selectedForecastDayIndex)) renderFourDayWeatherCard(lat, lng);
-      });
-    });
+    daysWrap.innerHTML = fourDayForecast.map(buildWeatherDayButtonHtml).join('');
+    bindWeatherDayButtons(daysWrap, lat, lng);
     var selected = fourDayForecast[selectedForecastDayIndex];
     if (summary && selected) {
       var cond = selected.labelKey ? t(selected.labelKey) : (selected.theme === 'rain' ? t('wmoRain') : t('wmoClear'));
@@ -3368,6 +3516,19 @@
     }, 40);
   }
 
+  function trackAbortController(ac) {
+    if (!ac) return null;
+    liveAbortControllers.push(ac);
+    return ac;
+  }
+
+  function abortLiveFetches() {
+    liveAbortControllers.forEach(function (ac) {
+      try { ac.abort(); } catch (e) { }
+    });
+    liveAbortControllers = [];
+  }
+
   function showLoadingOverlay() {
     if (!loading) return;
     loading.classList.add('is-visible');
@@ -3378,13 +3539,12 @@
     startLoadingProgressDrift(2, 48, 5500);
   }
 
-  function hideLoadingOverlay() {
+  function hideLoadingOverlay(immediate) {
     if (loadingProgressTimer) {
       clearInterval(loadingProgressTimer);
       loadingProgressTimer = null;
     }
-    applyLoadingProgressUI(100);
-    setTimeout(function () {
+    function finish() {
       if (!loading) return;
       loading.classList.remove('is-visible');
       loading.setAttribute('aria-hidden', 'true');
@@ -3392,7 +3552,23 @@
       setLoadingText('loadingText');
       var sub = $('loadingSub');
       if (sub) sub.textContent = '';
-    }, 280);
+    }
+    if (immediate) {
+      finish();
+      return;
+    }
+    applyLoadingProgressUI(100);
+    setTimeout(finish, 280);
+  }
+
+  function cancelPlanGeneration() {
+    if (!planGenerating && !(loading && loading.classList.contains('is-visible'))) return;
+    planCancelRequested = true;
+    planGenerateToken++;
+    abortLiveFetches();
+    planGenerating = false;
+    hideLoadingOverlay(true);
+    showError(t('planCancelled'));
   }
 
   function fetchPlacesViaNetlify(center, radiusMeters) {
@@ -3402,6 +3578,7 @@
     var radius = Math.min(8000, Math.max(100, Math.round(radiusMeters || 1000)));
     var url = '/.netlify/functions/places?lat=' + encodeURIComponent(lat) + '&lng=' + encodeURIComponent(lng) + '&radius=' + encodeURIComponent(radius);
     var ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    trackAbortController(ac);
     var timer = setTimeout(function () {
       if (ac) ac.abort();
     }, 12000);
@@ -3456,7 +3633,10 @@
 
     function fetchOne(url) {
       var ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      if (ac) controllers.push(ac);
+      if (ac) {
+        controllers.push(ac);
+        trackAbortController(ac);
+      }
       var timer = setTimeout(function () {
         if (ac) ac.abort();
       }, 9000);
@@ -4052,6 +4232,26 @@
     var mi = parseInt(m[2], 10);
     if (h > 24 || mi > 59) return null;
     return Math.min(24 * 60, h * 60 + mi);
+  }
+
+  function formatOpeningHoursBrief(ohRaw) {
+    var parsed = parseOpeningHours(ohRaw);
+    if (parsed.alwaysOpen) return t('hoursAlways');
+    if (parsed.closed) return t('hoursClosed');
+    if (!parsed.unknown && parsed.rules && parsed.rules.length) {
+      var dow = getPlanDateForHours().getDay();
+      for (var i = 0; i < parsed.rules.length; i++) {
+        var r = parsed.rules[i];
+        if (r.days && r.days.indexOf(dow) === -1) continue;
+        if (r.closed) return t('hoursClosedToday');
+        if (r.openMin != null && r.closeMin != null) {
+          return t('hoursToday') + ' ' + minutesToTime(r.openMin) + '–' + minutesToTime(r.closeMin);
+        }
+      }
+    }
+    var s = String(ohRaw || '').replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    return s.length > 40 ? s.slice(0, 39) + '…' : s;
   }
 
   function parseOpeningHours(ohRaw) {
@@ -4951,6 +5151,46 @@
     return name || t('planCardTitle');
   }
 
+  function nextUntitledPlanTitle() {
+    var bases = [];
+    if (TRANSLATIONS.ko && TRANSLATIONS.ko.planCardTitle) bases.push(TRANSLATIONS.ko.planCardTitle);
+    if (TRANSLATIONS.en && TRANSLATIONS.en.planCardTitle) bases.push(TRANSLATIONS.en.planCardTitle);
+    var max = 0;
+    bases.forEach(function (base) {
+      if (!base) return;
+      var re = new RegExp('^' + String(base).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\d*)$');
+      savedPlans.forEach(function (p) {
+        var title = String((p && p.title) || '').trim();
+        var m = title.match(re);
+        if (!m) return;
+        if (m[1] === '') max = Math.max(max, 1);
+        else {
+          var num = parseInt(m[1], 10);
+          if (!isNaN(num)) max = Math.max(max, num);
+        }
+      });
+    });
+    return t('planCardTitle') + (max + 1);
+  }
+
+  function focusPlanRegionOnMap(item) {
+    if (!item || !item.center) return;
+    var lat = Number(item.center.lat);
+    var lng = Number(item.center.lng != null ? item.center.lng : item.center.lon);
+    if (isNaN(lat) || isNaN(lng)) return;
+    searchCenter = { lat: lat, lng: lng };
+    var pickRadio = document.querySelector('input[name="quickRegion"][value="pick"]');
+    if (pickRadio) pickRadio.checked = true;
+    if (mapHint) mapHint.textContent = t('mapHintPick');
+    openDetailedSettings();
+    if (mapAdapter) {
+      if (mapAdapter.clearSearchMarkers) mapAdapter.clearSearchMarkers();
+      if (mapAdapter.setView) mapAdapter.setView(lat, lng, 15);
+      if (mapAdapter.addPickMarker) mapAdapter.addPickMarker(lat, lng, getPlanDisplayTitle(item.title));
+    }
+    setTimeout(refreshMainMapAfterShow, 200);
+  }
+
   function applyBudgetToOrder(order, budgetWon) {
     var costs = getEstimatedCosts();
     var sum = 0;
@@ -5282,6 +5522,119 @@
 
   var planGenerating = false;
 
+  function hidePlanRecovery() {
+    var el = $('planRecovery');
+    if (el) el.hidden = true;
+  }
+
+  function showPlanRecovery(message) {
+    var el = $('planRecovery');
+    var text = $('planRecoveryText');
+    if (!el) {
+      showError(message);
+      return;
+    }
+    if (text) text.textContent = message;
+    el.hidden = false;
+    try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) { }
+  }
+
+  function retryGenerateWithRecovery(mode) {
+    hidePlanRecovery();
+    if (mode === 'widen') {
+      if (radiusSelect) {
+        radiusSelect.value = '2000';
+        updateRadiusCustomVisibility();
+      }
+    } else if (mode === 'relax') {
+      var normalCongestion = document.querySelector('input[name="congestionPreference"][value="normal"]');
+      if (normalCongestion) normalCongestion.checked = true;
+      var currentR = getRadiusMeters();
+      if ((currentR == null || currentR < 2000) && radiusSelect) {
+        radiusSelect.value = '2000';
+        updateRadiusCustomVisibility();
+      }
+    }
+    // mode === 'asis' → 설정 변경 없이 다시 시도
+    persistGuestDraft();
+    if (lastGenerateCenter) doGeneratePlan(lastGenerateCenter);
+    else generatePlan();
+  }
+
+  var pendingRegionGenerate = null;
+
+  function getCurrentStyleSummaryText() {
+    var bits = [];
+    var priceEl = document.querySelector('input[name="priceTier"]:checked');
+    var priceMap = { cheap: 'priceTierCheap', normal: 'priceTierNormal', expensive: 'priceTierExpensive' };
+    if (priceEl && priceMap[priceEl.value]) bits.push(t(priceMap[priceEl.value]));
+    var congEl = document.querySelector('input[name="congestionPreference"]:checked');
+    var congMap = { relaxed: 'congestionRelaxed', normal: 'congestionNormal', busy: 'congestionBusy' };
+    if (congEl && congMap[congEl.value]) bits.push(t(congMap[congEl.value]));
+    var mbtiEl = document.querySelector('input[name="mbtiPJ"]:checked');
+    if (mbtiEl && mbtiEl.value === 'P') bits.push(t('mbtiP'));
+    else if (mbtiEl && mbtiEl.value === 'J') bits.push(t('mbtiJ'));
+    var startEl = $('startTime');
+    var endEl = $('endTime');
+    if (startEl && endEl && startEl.value && endEl.value) bits.push(startEl.value + '–' + endEl.value);
+    var r = getRadiusMeters();
+    if (r != null) bits.push((r >= 1000 ? (r / 1000) + 'km' : r + 'm'));
+    return bits.length ? (t('regionGenerateStyleLabel') + ': ' + bits.join(' · ')) : '';
+  }
+
+  function closeRegionGenerateModal() {
+    var modal = $('regionGenerateModal');
+    if (!modal) return;
+    modal.classList.remove('is-visible');
+    modal.setAttribute('aria-hidden', 'true');
+    pendingRegionGenerate = null;
+  }
+
+  function askGenerateAtRegion(center, label) {
+    if (!center) return;
+    pendingRegionGenerate = {
+      center: { lat: center.lat, lng: center.lng != null ? center.lng : center.lon },
+      label: String(label || '').trim()
+    };
+    var modal = $('regionGenerateModal');
+    var placeEl = $('regionGeneratePlace');
+    var styleEl = $('regionGenerateStyle');
+    if (placeEl) placeEl.textContent = pendingRegionGenerate.label || (pendingRegionGenerate.center.lat.toFixed(3) + ', ' + pendingRegionGenerate.center.lng.toFixed(3));
+    if (styleEl) styleEl.textContent = getCurrentStyleSummaryText();
+    if ($('regionGenerateTitle')) $('regionGenerateTitle').textContent = t('regionGenerateTitle');
+    if ($('regionGenerateHint')) $('regionGenerateHint').textContent = t('regionGenerateHint');
+    if ($('btnRegionGenerateConfirmText')) $('btnRegionGenerateConfirmText').textContent = t('regionGenerateConfirm');
+    if ($('btnRegionGenerateSettingsText')) $('btnRegionGenerateSettingsText').textContent = t('regionGenerateSettings');
+    if ($('btnRegionGenerateCancel')) $('btnRegionGenerateCancel').textContent = t('regionGenerateCancel');
+    if (!modal) {
+      doGeneratePlan(pendingRegionGenerate.center);
+      return;
+    }
+    modal.classList.add('is-visible');
+    modal.setAttribute('aria-hidden', 'false');
+  }
+
+  function confirmRegionGenerate() {
+    if (!window.confirm(t('regionGenerateWarn'))) return;
+    var pending = pendingRegionGenerate;
+    closeRegionGenerateModal();
+    if (pending && pending.center) doGeneratePlan(pending.center);
+  }
+
+  function openSettingsFromRegionGenerate() {
+    closeRegionGenerateModal();
+    openDetailedSettings();
+  }
+
+  function bindRegionGenerateModal() {
+    if (bindRegionGenerateModal._bound) return;
+    bindRegionGenerateModal._bound = true;
+    if ($('btnRegionGenerateConfirm')) $('btnRegionGenerateConfirm').addEventListener('click', confirmRegionGenerate);
+    if ($('btnRegionGenerateSettings')) $('btnRegionGenerateSettings').addEventListener('click', openSettingsFromRegionGenerate);
+    if ($('btnRegionGenerateCancel')) $('btnRegionGenerateCancel').addEventListener('click', closeRegionGenerateModal);
+    if ($('regionGenerateBackdrop')) $('regionGenerateBackdrop').addEventListener('click', closeRegionGenerateModal);
+  }
+
   function doGeneratePlan(center) {
     if (!center || !startTime || !endTime || !radiusSelect) return;
     if (planGenerating) return;
@@ -5297,6 +5650,10 @@
       return;
     }
     planGenerating = true;
+    planCancelRequested = false;
+    var myToken = ++planGenerateToken;
+    lastGenerateCenter = { lat: center.lat, lng: center.lng != null ? center.lng : center.lon };
+    hidePlanRecovery();
     if (loading) {
       showLoadingOverlay();
     }
@@ -5308,13 +5665,14 @@
         startLoadingProgressDrift(8, 78, 9000);
         overpassQuery._usedStaleCache = false;
         var elements = await overpassQuery(center, radiusMeters);
+        if (planCancelRequested || myToken !== planGenerateToken) return;
         var usedStalePlaceCache = !!overpassQuery._usedStaleCache;
         if (loadingProgressTimer) { clearInterval(loadingProgressTimer); loadingProgressTimer = null; }
         setLoadingProgress(58, 'loadingTextBuild', 'loadingSubBuild');
         var allPlaces = parseElements(elements);
         if (allPlaces.length === 0) {
           hideLoadingOverlay();
-          showError(t('errNoPlaces') + '\n' + t('errNoPlacesHint'));
+          showPlanRecovery(t('errNoPlaces') + '\n' + t('errNoPlacesHint'));
           return;
         }
         var restaurants = allPlaces.filter(function (p) { return ['restaurant', 'fast_food', 'bar'].indexOf(p.typeKey) !== -1; });
@@ -5578,9 +5936,8 @@
         var travelResult = await applyTravelTimesToPlan(plan, start, end);
         plan = travelResult.plan;
 
-        // 도보·3곳 이상이면 동선 한 번 더 다듬기 (무료 OSRM)
-        var transportVal = (document.querySelector('input[name="transport"]:checked') || {}).value || 'walk';
-        if (plan.length >= 3 && transportVal !== 'transit') {
+        // 장소 2곳 이상이면 항상 최단 동선 순서로 재배열 (OSRM 이동시간 기준)
+        if (plan.length >= 2) {
           try {
             var optimized = await optimizeRouteOrder(plan);
             var travel2 = await applyTravelTimesToPlan(optimized, start, end);
@@ -5645,6 +6002,7 @@
           streetSpread: streetSpread
         });
 
+        if (planCancelRequested || myToken !== planGenerateToken) return;
         renderPlan(plan, center, radiusMeters, startTime.value, endTime.value, timeNotice, estimatedCostWon, budget, pools, mbtiPJ, mbtiIE, {
           whyItems: whyItems,
           travelTotal: travelTotal
@@ -5657,14 +6015,17 @@
         addPlanToPlansArea(plan, center, radiusMeters, startTime.value, endTime.value, timeNotice, estimatedCostWon, budget, mbtiPJ, mbtiIE);
         scheduleCardShareReminder(startTime.value, endTime.value);
       } catch (e) {
+        if (planCancelRequested || myToken !== planGenerateToken) return;
         console.error(e);
         var msg = (e && e.message && String(e.message).indexOf('장소') !== -1)
           ? (t('errPlacesSearchFailed') + '\n' + t('errGenerateHint'))
           : (t('errGenerate') + '\n' + t('errGenerateHint'));
         showError(msg);
       } finally {
-        planGenerating = false;
-        hideLoadingOverlay();
+        if (myToken === planGenerateToken) {
+          planGenerating = false;
+          if (!planCancelRequested) hideLoadingOverlay();
+        }
       }
     })();
   }
@@ -5741,7 +6102,9 @@
         }
         if (mapHint) mapHint.textContent = t('mapHintPick');
         fetchFourDayForecast(searchCenter.lat, searchCenter.lng);
+        persistGuestDraft();
         openDetailedSettings();
+        askGenerateAtRegion(searchCenter, r.label || t('recentPickedHere'));
       });
     });
   }
@@ -5768,7 +6131,9 @@
     var seq = ++replacePlanSeq;
     lastRenderedPlan.plan = plan;
     lastRenderedPlan.estimatedCostWon = sumPlanEstimatedCost(plan, tier);
-    applyTravelTimesToPlan(plan, dayStart, dayEnd).then(function (result) {
+    optimizeRouteOrder(plan).then(function (ordered) {
+      return applyTravelTimesToPlan(ordered, dayStart, dayEnd);
+    }).then(function (result) {
       if (seq !== replacePlanSeq) return;
       var nextPlan = result.plan;
       var notice = (lr && lr.timeNotice) || '';
@@ -6104,7 +6469,9 @@
             return '<span class="place-why-chip">' + escapeHtml(w) + '</span>';
           }).join('') + '</div>'
         : '';
-      return '<li class="' + (p.pinned ? 'is-pinned' : '') + '">' + highlightStar + '<span class="place-name">' + escapeHtml(p.name) + congestionHtml + '</span>' + travelHtml + '<div class="place-time">' + p.timeStart + ' ~ ' + p.timeEnd + '</div><div class="place-type-row"><span class="place-type">' + escapeHtml(p.type) + '</span>' + slotSelect + '</div>' + costHtml + whyHtml + (p.addr ? '<div class="place-addr">' + escapeHtml(p.addr) + '</div>' : '') + '<div class="place-actions">' + verifyLink + reserveLink + menuLink + pinBtn + replaceBtn + undoBtn + '</div></li>';
+      var hoursText = (p.tags && p.tags.opening_hours) ? formatOpeningHoursBrief(p.tags.opening_hours) : '';
+      var hoursHtml = hoursText ? '<div class="place-hours">' + escapeHtml(hoursText) + '</div>' : '';
+      return '<li class="' + (p.pinned ? 'is-pinned' : '') + '">' + highlightStar + '<span class="place-name">' + escapeHtml(p.name) + congestionHtml + '</span>' + travelHtml + '<div class="place-time">' + p.timeStart + ' ~ ' + p.timeEnd + '</div><div class="place-type-row"><span class="place-type">' + escapeHtml(p.type) + '</span>' + slotSelect + '</div>' + costHtml + hoursHtml + whyHtml + (p.addr ? '<div class="place-addr">' + escapeHtml(p.addr) + '</div>' : '') + '<div class="place-actions">' + verifyLink + reserveLink + menuLink + pinBtn + replaceBtn + undoBtn + '</div></li>';
     }).join('');
     itinerary.querySelectorAll('.place-replace-btn').forEach(function (btn) {
       var idx = parseInt(btn.getAttribute('data-index'), 10);
@@ -6204,30 +6571,82 @@
   }
 
   function optimizeRouteOrder(plan) {
-    if (!plan || plan.length < 2) return plan;
+    if (!plan || plan.length < 2) return Promise.resolve(plan);
     var profile = getTransportProfile();
     var coords = plan.map(function (p) { return { lat: p.lat, lon: p.lon }; });
     return osrmTable(coords, profile).then(function (data) {
       if (!data.durations || !data.durations.length) return plan;
       var d = data.durations;
       var n = plan.length;
-      var order = [0];
-      var remaining = [];
-      for (var i = 1; i < n; i++) remaining.push(i);
-      while (remaining.length > 0) {
-        var last = order[order.length - 1];
-        var best = null;
-        var bestVal = Infinity;
-        for (var j = 0; j < remaining.length; j++) {
-          var to = remaining[j];
-          var val = (d[last] && d[last][to] != null) ? d[last][to] : 999999;
-          if (val < bestVal) { bestVal = val; best = to; }
+
+      function pathCost(order) {
+        var sum = 0;
+        for (var i = 0; i < order.length - 1; i++) {
+          var a = order[i];
+          var b = order[i + 1];
+          var val = (d[a] && d[a][b] != null) ? d[a][b] : Infinity;
+          if (!isFinite(val)) return Infinity;
+          sum += val;
         }
-        if (best == null) break;
-        order.push(best);
-        remaining = remaining.filter(function (x) { return x !== best; });
+        return sum;
       }
-      return order.map(function (i) { return plan[i]; });
+
+      var bestOrder = null;
+      var bestCost = Infinity;
+
+      if (n <= 8) {
+        // 코스 장소 수는 보통 4곳 이하 → 모든 순서를 비교해 최단 경로 선택
+        var idxs = [];
+        for (var i = 0; i < n; i++) idxs.push(i);
+        function permute(arr, m) {
+          if (m === arr.length) {
+            var c = pathCost(arr);
+            if (c < bestCost) {
+              bestCost = c;
+              bestOrder = arr.slice();
+            }
+            return;
+          }
+          for (var i = m; i < arr.length; i++) {
+            var tmp = arr[m];
+            arr[m] = arr[i];
+            arr[i] = tmp;
+            permute(arr, m + 1);
+            tmp = arr[m];
+            arr[m] = arr[i];
+            arr[i] = tmp;
+          }
+        }
+        permute(idxs, 0);
+      } else {
+        // 장소가 많을 때만 시작점별 최근접 탐욕
+        for (var start = 0; start < n; start++) {
+          var order = [start];
+          var remaining = [];
+          for (var r = 0; r < n; r++) if (r !== start) remaining.push(r);
+          while (remaining.length > 0) {
+            var last = order[order.length - 1];
+            var best = null;
+            var bestVal = Infinity;
+            for (var j = 0; j < remaining.length; j++) {
+              var to = remaining[j];
+              var val = (d[last] && d[last][to] != null) ? d[last][to] : 999999;
+              if (val < bestVal) { bestVal = val; best = to; }
+            }
+            if (best == null) break;
+            order.push(best);
+            remaining = remaining.filter(function (x) { return x !== best; });
+          }
+          var c2 = pathCost(order);
+          if (c2 < bestCost) {
+            bestCost = c2;
+            bestOrder = order.slice();
+          }
+        }
+      }
+
+      if (!bestOrder || !isFinite(bestCost)) return plan;
+      return bestOrder.map(function (i) { return plan[i]; });
     }).catch(function () { return plan; });
   }
 
@@ -6262,6 +6681,7 @@
   function resetResult() {
     resultSection.hidden = true;
     updateMobileDockForResult(false);
+    hidePlanRecovery();
     if (mapAdapter && mapAdapter.clearPlaceMarkers) mapAdapter.clearPlaceMarkers();
   }
 
@@ -6838,6 +7258,7 @@
       item.mbtiIE != null ? item.mbtiIE : ''
     );
     lastRenderedPlan.id = item.id;
+    focusPlanRegionOnMap(item);
     resultSection.hidden = false;
     resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
@@ -6870,7 +7291,7 @@
     var next = window.prompt(t('editPlanNamePrompt'), current);
     if (next == null) return;
     next = String(next).trim();
-    item.title = next || t('planCardTitle');
+    item.title = next || nextUntitledPlanTitle();
     persistSavedPlansLocal();
     upsertPlanCloud(item);
     var card = plansList && plansList.querySelector('[data-plan-id="' + id + '"]');
@@ -6887,7 +7308,7 @@
   function addPlanToPlansArea(plan, center, radiusMeters, start, end, timeNotice, estimatedCostWon, budgetWon, mbtiPJ, mbtiIE) {
     if (!plansList || !plansEmpty) return;
     var id = Date.now();
-    var title = getPlanNameInputValue() || t('planCardTitle');
+    var title = getPlanNameInputValue() || nextUntitledPlanTitle();
     var item = {
       id: id,
       title: title,
@@ -7187,6 +7608,15 @@
   bindLocationConsentHandlers();
   bindMobileChromeHandlers();
   initClientMonitoring();
+  bindGuestDraftAutosave();
+  loadGuestDraft();
+  loadSavedPlansLocal();
+  renderRecentRegions();
+  if ($('btnCancelLoading')) $('btnCancelLoading').addEventListener('click', cancelPlanGeneration);
+  if ($('btnRecoveryWiden')) $('btnRecoveryWiden').addEventListener('click', function () { retryGenerateWithRecovery('widen'); });
+  if ($('btnRecoveryRelax')) $('btnRecoveryRelax').addEventListener('click', function () { retryGenerateWithRecovery('relax'); });
+  if ($('btnRecoveryAsIs')) $('btnRecoveryAsIs').addEventListener('click', function () { retryGenerateWithRecovery('asis'); });
+  bindRegionGenerateModal();
   initSupabaseAuth();
   bindSavePresetModalHandlers();
   setTimeout(function () {

@@ -276,6 +276,21 @@
           </div>
         </section>
 
+        <div class="plan-recovery" id="planRecovery" hidden>
+          <p class="plan-recovery-text" id="planRecoveryText"></p>
+          <div class="plan-recovery-actions">
+            <button type="button" class="btn btn-main pill" id="btnRecoveryWiden">
+              <span id="btnRecoveryWidenText">2km로 다시</span>
+            </button>
+            <button type="button" class="btn btn-outline pill" id="btnRecoveryRelax">
+              <span id="btnRecoveryRelaxText">필터 완화 후 다시</span>
+            </button>
+            <button type="button" class="btn btn-outline pill" id="btnRecoveryAsIs">
+              <span id="btnRecoveryAsIsText">이대로 하기</span>
+            </button>
+          </div>
+        </div>
+
         <!-- 결과: 오늘의 플랜 -->
         <section class="result-section" id="resultSection" hidden>
           <div class="result-header">
@@ -326,6 +341,9 @@
         <div class="loading-bar" aria-hidden="true">
           <div class="loading-bar-fill" id="loadingBarFill"></div>
         </div>
+        <button type="button" class="btn btn-outline pill loading-cancel-btn" id="btnCancelLoading">
+          <span id="btnCancelLoadingText">취소</span>
+        </button>
       </div>
     </div>
 
@@ -351,6 +369,25 @@
       <p class="location-consent-links">
         <a href="./legal/privacy.html" id="locationConsentPrivacyLink">개인정보처리방침</a>
       </p>
+    </div>
+  </div>
+
+  <!-- 지역 선택 후 일정 만들기 확인 -->
+  <div class="login-modal" id="regionGenerateModal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="regionGenerateTitle">
+    <div class="login-modal-backdrop" id="regionGenerateBackdrop"></div>
+    <div class="login-modal-card region-generate-card">
+      <div class="login-modal-emoji" aria-hidden="true">📍</div>
+      <h2 class="login-modal-title" id="regionGenerateTitle">이 지역으로 일정을 만들까요?</h2>
+      <p class="login-modal-desc" id="regionGeneratePlace"></p>
+      <p class="region-generate-style" id="regionGenerateStyle"></p>
+      <p class="region-generate-hint" id="regionGenerateHint">지금 설정된 가격대·인기도·시간으로 바로 만들어요. 바꾸려면 설정 바꾸기를 눌러 주세요.</p>
+      <button type="button" class="btn btn-main pill login-modal-btn" id="btnRegionGenerateConfirm">
+        <span id="btnRegionGenerateConfirmText">이대로 만들기</span>
+      </button>
+      <button type="button" class="btn btn-outline pill login-modal-btn" id="btnRegionGenerateSettings">
+        <span id="btnRegionGenerateSettingsText">설정 바꾸기</span>
+      </button>
+      <button type="button" class="login-modal-link" id="btnRegionGenerateCancel">취소</button>
     </div>
   </div>
 
