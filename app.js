@@ -3721,8 +3721,129 @@
         return filteredNear;
       }
     }
+
+    // Overpass가 전부 막히면 네이버 지역검색으로 대체 (한국)
+    setLoadingText('loadingTextRetry');
+    var naverEls = await fetchPlacesViaNaverFallback(center, radiusMeters);
+    if (naverEls && naverEls.length) {
+      putCachedPlaceElements(cacheKey, naverEls);
+      setLoadingText('loadingText');
+      return naverEls;
+    }
+
     setLoadingText('loadingText');
-    throw lastError || new Error(t('errPlacesSearchFailed'));
+    throw new Error(t('errPlacesSearchFailed'));
+  }
+
+  function stripHtmlTags(s) {
+    return String(s || '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').trim();
+  }
+
+  function naverMapToLatLng(mapx, mapy) {
+    var x = Number(mapx);
+    var y = Number(mapy);
+    if (!isFinite(x) || !isFinite(y)) return null;
+    // 네이버 지역검색 mapx/mapy는 경도·위도 × 10^7
+    return { lat: y / 1e7, lon: x / 1e7 };
+  }
+
+  function reverseGeocodeAreaName(lat, lng) {
+    var url = 'https://nominatim.openstreetmap.org/reverse?format=json&lat=' +
+      encodeURIComponent(lat) + '&lon=' + encodeURIComponent(lng) +
+      '&zoom=14&addressdetails=1';
+    return fetch(url, {
+      headers: { 'Accept-Language': currentLang === 'en' ? 'en' : 'ko' }
+    }).then(function (res) { return res.json(); }).then(function (data) {
+      var a = (data && data.address) || {};
+      return a.suburb || a.neighbourhood || a.quarter || a.city_district ||
+        a.borough || a.town || a.city || a.county || a.village || '';
+    }).catch(function () { return ''; });
+  }
+
+  function areaHintForPlaceSearch(center) {
+    var typed = (confirmedSearchQuery || (searchInput && searchInput.value) || '').trim();
+    if (typed) {
+      // "홈플러스 운정점" → 운정 쪽이 검색에 유리
+      var parts = typed.split(/\s+/).filter(Boolean);
+      if (parts.length >= 2) return parts[parts.length - 1].replace(/(점|역|동)$/g, '') || typed;
+      return typed.replace(/(점|역)$/g, '');
+    }
+    try {
+      var recents = JSON.parse(localStorage.getItem('auvia-recent-regions') || '[]') || [];
+      var lat = Number(center.lat);
+      var lng = Number(center.lng != null ? center.lng : center.lon);
+      for (var i = 0; i < recents.length; i++) {
+        var r = recents[i];
+        if (!r || r.lat == null || r.lng == null) continue;
+        if (Math.abs(Number(r.lat) - lat) < 0.01 && Math.abs(Number(r.lng) - lng) < 0.01) {
+          return String(r.label || '').replace(/(점|역)$/g, '') || '';
+        }
+      }
+    } catch (e) { }
+    return '';
+  }
+
+  function naverItemToOsmElement(item, typeKey, index) {
+    var coords = naverMapToLatLng(item.mapx, item.mapy);
+    if (!coords) return null;
+    var name = stripHtmlTags(item.title);
+    if (!name) return null;
+    var tags = { name: name, 'addr:full': item.roadAddress || item.address || '' };
+    if (typeKey === 'cafe' || typeKey === 'ice_cream') tags.amenity = typeKey === 'ice_cream' ? 'ice_cream' : 'cafe';
+    else if (typeKey === 'park') tags.leisure = 'park';
+    else if (typeKey === 'museum' || typeKey === 'gallery' || typeKey === 'attraction' || typeKey === 'theme_park') tags.tourism = typeKey;
+    else if (typeKey === 'mall') tags.shop = 'mall';
+    else tags.amenity = 'restaurant';
+    var cat = String(item.category || '');
+    if (/카페|커피|디저트|베이커리/i.test(cat)) tags.amenity = 'cafe';
+    else if (/공원/i.test(cat)) { delete tags.amenity; tags.leisure = 'park'; }
+    else if (/박물관|미술관/i.test(cat)) { delete tags.amenity; tags.tourism = /미술/i.test(cat) ? 'gallery' : 'museum'; }
+    else if (/쇼핑몰|백화점/i.test(cat)) { delete tags.amenity; tags.shop = 'mall'; }
+    return {
+      type: 'node',
+      id: 'naver-' + String(item.mapx) + '-' + String(item.mapy) + '-' + index,
+      lat: coords.lat,
+      lon: coords.lon,
+      tags: tags
+    };
+  }
+
+  async function fetchPlacesViaNaverFallback(center, radiusMeters) {
+    if (!isNaverSearchConfigured()) return null;
+    var lat = Number(center.lat);
+    var lng = Number(center.lng != null ? center.lng : center.lon);
+    if (!isFinite(lat) || !isFinite(lng)) return null;
+    var area = areaHintForPlaceSearch(center);
+    if (!area) area = await reverseGeocodeAreaName(lat, lng);
+    if (!area) area = currentLang === 'en' ? 'Seoul' : '서울';
+    var jobs = [
+      { q: area + ' 맛집', typeKey: 'restaurant' },
+      { q: area + ' 카페', typeKey: 'cafe' },
+      { q: area + ' 공원', typeKey: 'park' },
+      { q: area + ' 놀거리', typeKey: 'attraction' },
+      { q: area + ' 박물관', typeKey: 'museum' }
+    ];
+    var collected = [];
+    var seen = {};
+    for (var i = 0; i < jobs.length; i++) {
+      var nr = await fetchNaverLocalSearch(jobs[i].q, 'comment');
+      var items = (nr && nr.items) || [];
+      for (var j = 0; j < items.length; j++) {
+        var el = naverItemToOsmElement(items[j], jobs[i].typeKey, collected.length);
+        if (!el) continue;
+        var key = el.lat.toFixed(5) + ',' + el.lon.toFixed(5) + ',' + (el.tags.name || '');
+        if (seen[key]) continue;
+        var dist = haversineMeters(
+          { lat: lat, lon: lng },
+          { lat: el.lat, lon: el.lon }
+        );
+        // 반경보다 약간 넓게 허용 (네이버는 위치 정확도가 들쭉날쭉)
+        if (dist > Math.max(radiusMeters * 1.8, 2500)) continue;
+        seen[key] = true;
+        collected.push(el);
+      }
+    }
+    return collected.length ? collected : null;
   }
 
   function filterOsmElementsByRadius(elements, center, radiusMeters) {
@@ -6017,10 +6138,14 @@
       } catch (e) {
         if (planCancelRequested || myToken !== planGenerateToken) return;
         console.error(e);
-        var msg = (e && e.message && String(e.message).indexOf('장소') !== -1)
-          ? (t('errPlacesSearchFailed') + '\n' + t('errGenerateHint'))
+        var errText = String((e && e.message) || e || '');
+        var isPlacesErr = /장소|places|overpass|abort|Failed to fetch|NetworkError|load failed/i.test(errText) ||
+          errText.indexOf(t('errPlacesSearchFailed')) !== -1;
+        var msg = isPlacesErr
+          ? (t('errPlacesSearchFailed') + '\n' + t('errNoPlacesHint'))
           : (t('errGenerate') + '\n' + t('errGenerateHint'));
-        showError(msg);
+        if (isPlacesErr) showPlanRecovery(msg);
+        else showError(msg);
       } finally {
         if (myToken === planGenerateToken) {
           planGenerating = false;

@@ -9,7 +9,7 @@ export async function handler(event) {
 
   const url =
     "https://openapi.naver.com/v1/search/local.json" +
-    `?query=${encodeURIComponent(query)}&display=5&start=1&sort=${sortParam}`;
+    `?query=${encodeURIComponent(query)}&display=10&start=1&sort=${sortParam}`;
 
   try {
     const res = await fetch(url, {
