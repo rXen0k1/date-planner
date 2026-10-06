@@ -3788,7 +3788,9 @@
     if (!coords) return null;
     var name = stripHtmlTags(item.title);
     if (!name) return null;
-    var tags = { name: name, 'addr:full': item.roadAddress || item.address || '' };
+    var tags = { name: name, 'addr:full': item.roadAddress || item.address || '', naver_name: name };
+    var mapUrl = 'https://map.naver.com/v5/search/' + encodeURIComponent(name);
+    tags.naver_link = mapUrl;
     if (typeKey === 'cafe' || typeKey === 'ice_cream') tags.amenity = typeKey === 'ice_cream' ? 'ice_cream' : 'cafe';
     else if (typeKey === 'park') tags.leisure = 'park';
     else if (typeKey === 'museum' || typeKey === 'gallery' || typeKey === 'attraction' || typeKey === 'theme_park') tags.tourism = typeKey;
@@ -3837,8 +3839,8 @@
           { lat: lat, lon: lng },
           { lat: el.lat, lon: el.lon }
         );
-        // 반경보다 약간 넓게 허용 (네이버는 위치 정확도가 들쭉날쭉)
-        if (dist > Math.max(radiusMeters * 1.8, 2500)) continue;
+        // 선택한 위치 반경 안만 (최소 2.5km 강제 허용 금지)
+        if (dist > (radiusMeters || 1500) * 1.2) continue;
         seen[key] = true;
         collected.push(el);
       }
@@ -3894,6 +3896,9 @@
     // 숫자·기호만 / 노드 id 형태
     if (/^[\d\s\-_.·#]+$/.test(n)) return true;
     if (/^(node|way|relation)[\s_-]*\d+$/i.test(n)) return true;
+    // 미술관·매장 부속 선물/기념품 매장은 데이트 장소로 부적합
+    if (/(선물|기념품|굿즈|티켓|매표소)\s*$/.test(n)) return true;
+    if (/(선물점|기념품점|굿즈샵|티켓부스)/.test(n)) return true;
     // 너무 일반적인 접두만 있는 이름
     if (/^(restaurant|cafe|café|park|bar)\s*\d*$/i.test(n)) return true;
     if (/^(식당|카페|공원|음식점)\s*\d*$/.test(n)) return true;
@@ -4207,7 +4212,18 @@
       }
       var addr = [tags['addr:street'], tags['addr:housenumber'], tags['addr:full']].filter(Boolean).join(' ') || tags.address || '';
       var priceTier = parseOsmPriceTag(tags.price) || (tags.fee != null && String(tags.fee).toLowerCase() === 'free' ? 'cheap' : null);
-      places.push({ name: name, type: type, typeKey: typeKey, lat: lat, lon: lon, addr: addr, tags: tags, priceTier: priceTier });
+      places.push({
+        name: name,
+        type: type,
+        typeKey: typeKey,
+        lat: lat,
+        lon: lon,
+        addr: addr,
+        tags: tags,
+        priceTier: priceTier,
+        naverName: tags.naver_name || '',
+        naverMapUrl: tags.naver_link || ''
+      });
     }
     return places;
   }
@@ -4560,7 +4576,16 @@
     });
   }
 
-  function enrichPlanWithNaverCongestion(plan) {
+  function filterPlacesByRadius(places, center, radiusMeters) {
+    if (!places || !places.length || !center) return places || [];
+    var maxM = (radiusMeters || 1500) * 1.15;
+    return places.filter(function (p) {
+      if (!p || p.lat == null || p.lon == null) return false;
+      return haversineMeters(center, p) <= maxM;
+    });
+  }
+
+  function enrichPlanWithNaverCongestion(plan, center, radiusMeters) {
     if (!plan || plan.length === 0 || !isNaverSearchConfigured()) return Promise.resolve(plan);
     var queries = plan.map(function (p) { return (p.name || '').trim() || null; });
     return Promise.all(queries.map(function (q) { return fetchNaverLocalSearch(q || '', 'comment'); }))
@@ -4581,19 +4606,49 @@
         }
         var labelByLevel = { relaxed: 'congestionRelaxed', normal: 'congestionNormal', busy: 'congestionBusy' };
         var highlightKeywords = ['인생샷', '분위기', '데이트'];
+        var maxFromCenter = (radiusMeters || 1500) * 1.2;
         for (var j = 0; j < plan.length; j++) {
           var level = levelByIndex[j] || 'normal';
           plan[j].congestion = { level: level, labelKey: labelByLevel[level] };
           plan[j].highlight = false;
           var items = results[j] && results[j].items;
-          if (items && Array.isArray(items)) {
+          if (items && Array.isArray(items) && items.length) {
+            // 일정 좌표에 가장 가까운 네이버 업체 → "도미노피자 역삼점"처럼 지점명 확정
+            var best = pickClosestNaverItem(items, plan[j].lat, plan[j].lon);
+            if (best) {
+              var title = stripHtmlTags(best.title);
+              var bestCoords = naverMapToLatLng(best.mapx, best.mapy);
+              if (title && looksLikeSpecificBranchName(title)) {
+                applyNaverExactName(plan[j], best, j);
+              } else if (title && bestCoords) {
+                // 지점 접미사 없어도 좌표가 맞으면 정식명 사용
+                var dPlace = haversineMeters(plan[j], { lat: bestCoords.lat, lon: bestCoords.lon });
+                if (dPlace <= 900) applyNaverExactName(plan[j], best, j);
+              }
+              // 네이버상 실제 위치가 선택 반경 밖이면 일정에서 빼도록 표시
+              if (center && bestCoords) {
+                var dCenter = haversineMeters(
+                  { lat: center.lat, lon: center.lng != null ? center.lng : center.lon },
+                  { lat: bestCoords.lat, lon: bestCoords.lon }
+                );
+                if (dCenter > maxFromCenter) plan[j]._tooFarFromCenter = true;
+              }
+            }
             for (var k = 0; k < items.length; k++) {
-              var title = (items[k].title || '').replace(/<[^>]+>/g, '').trim();
+              var t2 = (items[k].title || '').replace(/<[^>]+>/g, '').trim();
               var desc = (items[k].description || '').replace(/<[^>]+>/g, '').trim();
-              var text = title + ' ' + desc;
+              var text = t2 + ' ' + desc;
               var found = highlightKeywords.some(function (kw) { return text.indexOf(kw) !== -1; });
               if (found) { plan[j].highlight = true; break; }
             }
+          }
+          // OSM 좌표 자체가 반경 밖이면 제외
+          if (center && plan[j].lat != null) {
+            var dOsm = haversineMeters(
+              { lat: center.lat, lon: center.lng != null ? center.lng : center.lon },
+              plan[j]
+            );
+            if (dOsm > maxFromCenter) plan[j]._tooFarFromCenter = true;
           }
         }
         return plan;
@@ -5790,7 +5845,10 @@
         var usedStalePlaceCache = !!overpassQuery._usedStaleCache;
         if (loadingProgressTimer) { clearInterval(loadingProgressTimer); loadingProgressTimer = null; }
         setLoadingProgress(58, 'loadingTextBuild', 'loadingSubBuild');
-        var allPlaces = parseElements(elements);
+        var allPlaces = filterPlacesByRadius(parseElements(elements), {
+          lat: center.lat,
+          lon: center.lng != null ? center.lng : center.lon
+        }, radiusMeters);
         if (allPlaces.length === 0) {
           hideLoadingOverlay();
           showPlanRecovery(t('errNoPlaces') + '\n' + t('errNoPlacesHint'));
@@ -6051,7 +6109,41 @@
               return;
             }
           }
-          plan = await enrichPlanWithNaverCongestion(plan);
+          plan = await enrichPlanWithNaverCongestion(plan, center, radiusMeters);
+          // 반경 밖·네이버상 딴 동네 장소는 교체
+          if (plan.some(function (p) { return p && p._tooFarFromCenter; })) {
+            var farUsed = new Set(plan.filter(function (p) { return p && !p._tooFarFromCenter; }).map(function (p) { return p.name; }));
+            for (var fi = 0; fi < plan.length; fi++) {
+              if (!plan[fi] || !plan[fi]._tooFarFromCenter) {
+                if (plan[fi]) delete plan[fi]._tooFarFromCenter;
+                continue;
+              }
+              var farSlot = placeSlotType(plan[fi]);
+              var farPoolIdx = { restaurant: 0, cafe: 1, activity: 2, park: 3 }[farSlot];
+              var farPool = (farPoolIdx != null && pools[farPoolIdx]) ? pools[farPoolIdx] : allPlaces;
+              var farAlts = (farPool || []).filter(function (p) {
+                return p && !farUsed.has(p.name) && !isWeakPlaceCandidate(p) &&
+                  haversineMeters({ lat: center.lat, lon: center.lng != null ? center.lng : center.lon }, p) <= radiusMeters * 1.15;
+              });
+              if (farAlts.length) {
+                var farPick = farAlts[0];
+                farUsed.add(farPick.name);
+                plan[fi] = Object.assign({}, farPick, {
+                  timeStart: plan[fi].timeStart,
+                  timeEnd: plan[fi].timeEnd,
+                  travelFromPrevMin: plan[fi].travelFromPrevMin,
+                  requestedSlot: plan[fi].requestedSlot || farSlot
+                });
+              } else {
+                plan[fi] = null;
+              }
+            }
+            plan = plan.filter(Boolean);
+            if (plan.length) {
+              plan = await enrichPlanWithNaverCongestion(plan, center, radiusMeters);
+              plan.forEach(function (p) { if (p) delete p._tooFarFromCenter; });
+            }
+          }
         }
 
         var travelResult = await applyTravelTimesToPlan(plan, start, end);
@@ -6571,9 +6663,9 @@
       var highlightStar = p.highlight ? '<span class="place-highlight" aria-label="' + escapeHtml(t('placeHighlightLabel') || '인생샷·분위기·데이트 추천') + '">⭐</span> ' : '';
       var congestionHtml = p.congestion ? '<span class="congestion ' + p.congestion.level + '">' + escapeHtml(t(p.congestion.labelKey)) + '</span>' : '';
       var links = buildPlaceDeepLinks(p);
-      var verifyLink = '<a href="' + escapeHtml(links.map) + '" target="_blank" rel="noopener noreferrer" class="place-verify-link">' + escapeHtml(t('placeVerifyMap')) + '</a>';
-      var reserveLink = '<a href="' + escapeHtml(links.reserve) + '" target="_blank" rel="noopener noreferrer" class="place-reserve-link">' + escapeHtml(t('placeReserveLink')) + '</a>';
-      var menuLink = '<a href="' + escapeHtml(links.menu) + '" target="_blank" rel="noopener noreferrer" class="place-menu-link">' + escapeHtml(t('placeMenuLink')) + '</a>';
+      var verifyLink = '<a href="' + escapeHtml(links.map) + '" target="_blank" rel="noopener noreferrer" class="place-verify-link" data-index="' + idx + '">' + escapeHtml(t('placeVerifyMap')) + '</a>';
+      var reserveLink = '<a href="' + escapeHtml(links.reserve) + '" target="_blank" rel="noopener noreferrer" class="place-reserve-link" data-index="' + idx + '">' + escapeHtml(t('placeReserveLink')) + '</a>';
+      var menuLink = '<a href="' + escapeHtml(links.menu) + '" target="_blank" rel="noopener noreferrer" class="place-menu-link" data-index="' + idx + '">' + escapeHtml(t('placeMenuLink')) + '</a>';
       var slotKey = p.requestedSlot || placeSlotType(p);
       var slotSelect = pools ? '<select class="place-slot-select" data-index="' + idx + '" aria-label="' + escapeHtml(t('placeSlotLabel')) + '">' +
         ['restaurant', 'cafe', 'activity', 'park'].map(function (key) {
@@ -6616,6 +6708,8 @@
         if (!isNaN(idx)) setPlanItemSlot(idx, sel.value);
       });
     });
+    bindPlaceMapLinkHandlers();
+    prefetchNaverExactNames(plan);
     if (mapAdapter && mapAdapter.addPlaceMarkers) {
       mapAdapter.clearPlaceMarkers();
       mapAdapter.addPlaceMarkers(plan);
@@ -6628,25 +6722,259 @@
     return div.innerHTML;
   }
 
+  function shortenAddrForSearch(addr) {
+    var s = String(addr || '').replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    s = s.replace(/^(대한민국|South Korea|Korea)\s*,?\s*/i, '');
+    var parts = s.split(/[,\s]+/).filter(Boolean);
+    var useful = [];
+    parts.forEach(function (p) {
+      if (!p || p.length < 2) return;
+      if (/^(경기도|서울특별시|부산광역시|인천광역시|대구광역시|대전광역시|광주광역시|울산광역시|세종특별자치시|강원특별자치도|제주특별자치도)$/.test(p)) return;
+      if (/[시군구읍면동리가]$/.test(p) || /역$/.test(p) || /로$|길$/.test(p)) useful.push(p);
+    });
+    if (useful.length) return useful.slice(0, 2).join(' ');
+    var fallback = parts.filter(function (p) {
+      return p.length >= 2 && !/^(경기도|서울특별시|부산광역시|인천광역시)$/.test(p);
+    }).slice(0, 2);
+    return fallback.join(' ');
+  }
+
+  /** 지점까지 붙은 구체적 상호명인지 (도미노피자 X / 도미노피자 역삼점 O) */
+  function looksLikeSpecificBranchName(name) {
+    var n = String(name || '').replace(/\s+/g, ' ').trim();
+    if (!n || n.length < 3) return false;
+    if (/[점관]$/.test(n)) return true;
+    if (/(본점|지점|센터|타워|몰|공원|시장|백화점)/.test(n)) return true;
+    // "브랜드 지역점"처럼 공백 구분된 구체 이름
+    if (/\s+\S+/.test(n) && n.length >= 6) return true;
+    return false;
+  }
+
+  function exactNaverPlaceName(place) {
+    var n = String((place && place.naverName) || '').replace(/\s+/g, ' ').trim();
+    if (n && looksLikeSpecificBranchName(n)) return n;
+    var fallback = String((place && place.name) || '').replace(/\s+/g, ' ').trim();
+    return fallback || '장소';
+  }
+
+  function buildPlaceSearchQuery(place) {
+    return exactNaverPlaceName(place);
+  }
+
   function buildPlaceDeepLinks(place) {
-    var name = (place && place.name) || '';
-    var addr = (place && place.addr) || '';
-    var q = (name + (addr ? ' ' + addr : '')).trim() || name;
-    var enc = encodeURIComponent(q);
+    var name = exactNaverPlaceName(place);
+    var enc = encodeURIComponent(name);
     var lat = place && place.lat != null ? Number(place.lat) : null;
     var lon = place && place.lon != null ? Number(place.lon) : null;
+    var hasCoords = lat != null && lon != null && !isNaN(lat) && !isNaN(lon);
     if (currentLang === 'en') {
-      var gq = (lat != null && lon != null && !isNaN(lat) && !isNaN(lon))
+      var gq = hasCoords
         ? ('https://www.google.com/maps?q=' + lat + ',' + lon)
         : ('https://www.google.com/maps/search/?api=1&query=' + enc);
       return { map: gq, reserve: gq, menu: gq };
     }
-    var placeSearch = 'https://map.naver.com/v5/search/' + enc;
+    var placeUrl = 'https://map.naver.com/v5/search/' + enc;
     return {
-      map: placeSearch,
-      reserve: placeSearch,
-      menu: placeSearch
+      map: placeUrl,
+      reserve: placeUrl,
+      menu: placeUrl
     };
+  }
+
+  var naverPlaceUrlCache = {};
+
+  function placeResolveCacheKey(place) {
+    return [
+      String((place && place.name) || ''),
+      place && place.lat != null ? Number(place.lat).toFixed(5) : '',
+      place && place.lon != null ? Number(place.lon).toFixed(5) : ''
+    ].join('|');
+  }
+
+  function pickClosestNaverItem(items, lat, lon) {
+    if (!items || !items.length) return null;
+    var hasCoords = lat != null && lon != null && !isNaN(lat) && !isNaN(lon);
+    if (!hasCoords) {
+      // 좌표 없으면 지점명이 붙은 결과를 우선
+      for (var j = 0; j < items.length; j++) {
+        if (looksLikeSpecificBranchName(stripHtmlTags(items[j].title))) return items[j];
+      }
+      return items[0];
+    }
+    var best = null;
+    var bestD = Infinity;
+    for (var i = 0; i < items.length; i++) {
+      var coords = naverMapToLatLng(items[i].mapx, items[i].mapy);
+      if (!coords) continue;
+      var d = haversineKm(
+        { lat: lat, lon: lon },
+        { lat: coords.lat, lon: coords.lon }
+      );
+      if (d < bestD) {
+        bestD = d;
+        best = items[i];
+      }
+    }
+    // 일정 좌표에 가장 가까운 지점 (최대 5km)
+    if (best && bestD <= 5) return best;
+    return best || items[0];
+  }
+
+  function naverItemToMapUrl(item) {
+    var title = stripHtmlTags(item && item.title);
+    if (!title) return '';
+    // 반드시 네이버 정식 상호(지점명 포함)로 검색
+    return 'https://map.naver.com/v5/search/' + encodeURIComponent(title);
+  }
+
+  function applyNaverExactName(place, item, idx) {
+    if (!place || !item) return '';
+    var title = stripHtmlTags(item.title);
+    if (!title) return '';
+    place.naverName = title;
+    // 브랜드명만 있던 일정 표기도 지점명으로 맞춤
+    if (!looksLikeSpecificBranchName(place.name) && looksLikeSpecificBranchName(title)) {
+      place.name = title;
+      if (itinerary && idx != null && !isNaN(idx)) {
+        var nameEl = itinerary.querySelectorAll('li')[idx];
+        if (nameEl) {
+          var span = nameEl.querySelector('.place-name');
+          if (span) {
+            var congestion = span.querySelector('.congestion');
+            var congHtml = congestion ? congestion.outerHTML : '';
+            span.innerHTML = escapeHtml(title) + congHtml;
+          }
+        }
+      }
+    }
+    var url = naverItemToMapUrl(item);
+    place.naverMapUrl = url;
+    if (place.tags) {
+      place.tags.naver_link = url;
+      place.tags.naver_name = title;
+    }
+    return url;
+  }
+
+  function regionHintForNaverLookup() {
+    var center = lastRenderedPlan && lastRenderedPlan.center;
+    if (center) {
+      var hint = areaHintForPlaceSearch({
+        lat: center.lat,
+        lng: center.lng != null ? center.lng : center.lon
+      });
+      if (hint) return String(hint).replace(/\s+/g, ' ').trim();
+    }
+    return (confirmedSearchQuery || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function resolveNaverMapUrl(place, idx) {
+    var fallback = buildPlaceDeepLinks(place).map;
+    if (currentLang === 'en') return Promise.resolve(fallback);
+    // 이미 "도미노피자 역삼점"처럼 지점까지 확정된 경우만 재검색 생략
+    if (place && place.naverName && looksLikeSpecificBranchName(place.naverName)) {
+      var ready = 'https://map.naver.com/v5/search/' + encodeURIComponent(place.naverName);
+      place.naverMapUrl = ready;
+      return Promise.resolve(ready);
+    }
+    var key = placeResolveCacheKey(place);
+    if (naverPlaceUrlCache[key]) {
+      var cached = naverPlaceUrlCache[key];
+      var cachedName = '';
+      try {
+        cachedName = decodeURIComponent(String(cached).split('/v5/search/')[1] || '');
+      } catch (e) { cachedName = ''; }
+      if (cachedName && looksLikeSpecificBranchName(cachedName)) {
+        place.naverName = cachedName;
+        place.naverMapUrl = cached;
+        return Promise.resolve(cached);
+      }
+    }
+
+    var name = String((place && place.name) || '').replace(/\s+/g, ' ').trim();
+    var shortAddr = shortenAddrForSearch(place && place.addr);
+    var region = regionHintForNaverLookup();
+    // 찾기용 쿼리 — 최종 URL에는 쓰지 않음. 좌표로 지점을 고른 뒤 그 정식명만 사용
+    var queries = [];
+    if (name && shortAddr) queries.push((name + ' ' + shortAddr.split(/\s+/)[0]).trim());
+    if (name && region && region !== name) queries.push((name + ' ' + region).trim());
+    if (name) queries.push(name);
+
+    var lat = place && place.lat != null ? Number(place.lat) : null;
+    var lon = place && place.lon != null ? Number(place.lon) : null;
+
+    function tryQuery(i) {
+      if (i >= queries.length) return Promise.resolve(fallback);
+      return fetchNaverLocalSearch(queries[i], 'random').then(function (data) {
+        var items = (data && data.items) || [];
+        if (!items.length) return tryQuery(i + 1);
+        var best = pickClosestNaverItem(items, lat, lon);
+        if (!best) return tryQuery(i + 1);
+        var title = stripHtmlTags(best.title);
+        // 브랜드명만 나오면 다음 쿼리로 더 구체적으로 찾기
+        if (!looksLikeSpecificBranchName(title) && i + 1 < queries.length) {
+          return tryQuery(i + 1);
+        }
+        var url = applyNaverExactName(place, best, idx);
+        if (!url) return tryQuery(i + 1);
+        naverPlaceUrlCache[key] = url;
+        return url;
+      });
+    }
+    return tryQuery(0);
+  }
+
+  function updatePlaceActionHrefs(idx, url) {
+    if (!itinerary || !url || idx == null || isNaN(idx)) return;
+    itinerary.querySelectorAll(
+      '.place-verify-link[data-index="' + idx + '"],' +
+      '.place-reserve-link[data-index="' + idx + '"],' +
+      '.place-menu-link[data-index="' + idx + '"]'
+    ).forEach(function (a) {
+      a.setAttribute('href', url);
+    });
+  }
+
+  function prefetchNaverExactNames(plan) {
+    if (!plan || !plan.length || currentLang === 'en') return;
+    plan.forEach(function (p, idx) {
+      if (!p) return;
+      // 브랜드명만 있으면 반드시 지점명으로 해석
+      if (p.naverName && looksLikeSpecificBranchName(p.naverName)) {
+        updatePlaceActionHrefs(idx, 'https://map.naver.com/v5/search/' + encodeURIComponent(p.naverName));
+        return;
+      }
+      resolveNaverMapUrl(p, idx).then(function (url) {
+        updatePlaceActionHrefs(idx, url);
+      });
+    });
+  }
+
+  function bindPlaceMapLinkHandlers() {
+    if (!itinerary || currentLang === 'en') return;
+    itinerary.querySelectorAll('.place-verify-link, .place-reserve-link, .place-menu-link').forEach(function (a) {
+      a.addEventListener('click', function (e) {
+        var idx = parseInt(a.getAttribute('data-index'), 10);
+        var place = lastRenderedPlan && lastRenderedPlan.plan && lastRenderedPlan.plan[idx];
+        if (!place) return;
+        e.preventDefault();
+        var popup = null;
+        try { popup = window.open('about:blank', '_blank'); } catch (err) { popup = null; }
+        resolveNaverMapUrl(place, idx).then(function (url) {
+          updatePlaceActionHrefs(idx, url);
+          if (popup && !popup.closed) {
+            popup.location = url;
+          } else {
+            window.open(url, '_blank', 'noopener,noreferrer');
+          }
+        }).catch(function () {
+          var fb = a.getAttribute('href') || buildPlaceDeepLinks(place).map;
+          if (popup && !popup.closed) popup.location = fb;
+          else window.open(fb, '_blank', 'noopener,noreferrer');
+        });
+      });
+    });
   }
 
   function reportClientError(err, extra) {

@@ -29,11 +29,8 @@ test('parseOpeningHours 24/7', function () {
 test('parseOpeningHours Mo-Fr window', function () {
   var p = core.parseOpeningHours('Mo-Fr 09:00-18:00');
   assert.ok(p.rules && p.rules.length);
-  // Monday 10:00 open
   assert.strictEqual(core.isOpenAtParsed(p, 1, 10 * 60), true);
-  // Monday 20:00 closed
   assert.strictEqual(core.isOpenAtParsed(p, 1, 20 * 60), false);
-  // Sunday unknown/closed for this rule set
   assert.strictEqual(core.isOpenAtParsed(p, 0, 10 * 60), null);
 });
 
@@ -45,6 +42,36 @@ test('buildPlaceDeepLinks ko map reserve menu are the same place search', functi
   assert.ok(decodeURIComponent(links.map).indexOf('테스트카페') !== -1);
   assert.ok(decodeURIComponent(links.map).indexOf('예약') === -1);
   assert.ok(decodeURIComponent(links.map).indexOf('메뉴') === -1);
+});
+
+test('buildPlaceSearchQuery uses branch name when present', function () {
+  var q = core.buildPlaceSearchQuery({
+    name: '청년감자탕순대국 파주야당역점',
+    addr: '경기도 파주시 야당동 123'
+  });
+  assert.strictEqual(q, '청년감자탕순대국 파주야당역점');
+});
+
+test('buildPlaceSearchQuery prefers specific naverName over brand-only name', function () {
+  var q = core.buildPlaceSearchQuery({
+    name: '도미노피자',
+    naverName: '도미노피자 역삼점',
+    addr: '서울 강남구'
+  });
+  assert.strictEqual(q, '도미노피자 역삼점');
+});
+
+test('buildPlaceDeepLinks ko searches specific branch not brand only', function () {
+  var links = core.buildPlaceDeepLinks({
+    name: '도미노피자',
+    naverName: '도미노피자 역삼점',
+    addr: '서울 강남구 역삼동',
+    lat: 37.5,
+    lon: 127.03
+  }, 'ko');
+  assert.ok(links.map.indexOf('/v5/search/') !== -1);
+  assert.strictEqual(decodeURIComponent(links.map.split('/v5/search/')[1]), '도미노피자 역삼점');
+  assert.ok(decodeURIComponent(links.map).indexOf('경기도') === -1);
 });
 
 test('buildPlaceDeepLinks en uses google', function () {

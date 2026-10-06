@@ -1,8 +1,7 @@
 /**
- * Pure helpers for unit tests (mirrors app.js cost/hours logic).
- * Keep in sync when changing estimate/opening-hours behavior.
+ * Pure helpers for unit tests (mirrors app.js cost/hours + deep-link logic).
+ * Keep in sync when changing estimate/opening-hours/map-link behavior.
  */
-'use strict';
 
 function parseOsmPriceTag(value) {
   if (value == null || value === '') return null;
@@ -20,8 +19,13 @@ function parseOsmPriceTag(value) {
 }
 
 var DAY_ALIASES = {
-  mo: 1, tu: 2, we: 3, th: 4, fr: 5, sa: 6, su: 0,
-  mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 0
+  su: 0, sun: 0, sunday: 0,
+  mo: 1, mon: 1, monday: 1,
+  tu: 2, tue: 2, tues: 2, tuesday: 2,
+  we: 3, wed: 3, wednesday: 3,
+  th: 4, thu: 4, thur: 4, thursday: 4,
+  fr: 5, fri: 5, friday: 5,
+  sa: 6, sat: 6, saturday: 6
 };
 
 function parseDayToken(tok) {
@@ -113,26 +117,66 @@ function isOpenAtParsed(parsed, dayOfWeek, minuteOfDay) {
   return open;
 }
 
+function shortenAddrForSearch(addr) {
+  var s = String(addr || '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  s = s.replace(/^(대한민국|South Korea|Korea)\s*,?\s*/i, '');
+  var parts = s.split(/[,\s]+/).filter(Boolean);
+  var useful = [];
+  parts.forEach(function (p) {
+    if (!p || p.length < 2) return;
+    if (/^(경기도|서울특별시|부산광역시|인천광역시|대구광역시|대전광역시|광주광역시|울산광역시|세종특별자치시|강원특별자치도|제주특별자치도)$/.test(p)) return;
+    if (/[시군구읍면동리가]$/.test(p) || /역$/.test(p) || /로$|길$/.test(p)) {
+      useful.push(p);
+    }
+  });
+  if (useful.length) return useful.slice(0, 2).join(' ');
+  var fallback = parts.filter(function (p) {
+    return p.length >= 2 && !/^(경기도|서울특별시|부산광역시|인천광역시)$/.test(p);
+  }).slice(0, 2);
+  return fallback.join(' ');
+}
+
+function looksLikeSpecificBranchName(name) {
+  var n = String(name || '').replace(/\s+/g, ' ').trim();
+  if (!n || n.length < 3) return false;
+  if (/[점관]$/.test(n)) return true;
+  if (/(본점|지점|센터|타워|몰|공원|시장|백화점)/.test(n)) return true;
+  if (/\s+\S+/.test(n) && n.length >= 6) return true;
+  return false;
+}
+
+function exactNaverPlaceName(place) {
+  var n = String((place && place.naverName) || '').replace(/\s+/g, ' ').trim();
+  if (n && looksLikeSpecificBranchName(n)) return n;
+  var fallback = String((place && place.name) || '').replace(/\s+/g, ' ').trim();
+  return fallback || '장소';
+}
+
+function buildPlaceSearchQuery(place) {
+  return exactNaverPlaceName(place);
+}
+
 function buildPlaceDeepLinks(place, lang) {
-  var name = (place && place.name) || '';
-  var addr = (place && place.addr) || '';
-  var q = (name + (addr ? ' ' + addr : '')).trim() || name;
-  var enc = encodeURIComponent(q);
-  var encName = encodeURIComponent(name);
+  var name = exactNaverPlaceName(place);
+  var enc = encodeURIComponent(name);
   var lat = place && place.lat != null ? Number(place.lat) : null;
   var lon = place && place.lon != null ? Number(place.lon) : null;
+  var hasCoords = lat != null && lon != null && !isNaN(lat) && !isNaN(lon);
   if (lang === 'en') {
-    var gq = (lat != null && lon != null && !isNaN(lat) && !isNaN(lon))
+    var gq = hasCoords
       ? ('https://www.google.com/maps?q=' + lat + ',' + lon)
       : ('https://www.google.com/maps/search/?api=1&query=' + enc);
-    return { map: gq, reserve: gq, menu: gq, kakao: 'https://map.kakao.com/?q=' + encName };
+    return { map: gq, reserve: gq, menu: gq, kakao: 'https://map.kakao.com/?q=' + enc };
   }
-  var placeSearch = 'https://map.naver.com/v5/search/' + enc;
+  var placeUrl = 'https://map.naver.com/v5/search/' + enc;
   return {
-    map: placeSearch,
-    reserve: placeSearch,
-    menu: placeSearch,
-    kakao: 'https://map.kakao.com/?q=' + encName
+    map: placeUrl,
+    reserve: placeUrl,
+    menu: placeUrl,
+    kakao: hasCoords
+      ? ('https://map.kakao.com/link/map/' + enc + ',' + lat + ',' + lon)
+      : ('https://map.kakao.com/?q=' + enc)
   };
 }
 
@@ -140,5 +184,6 @@ module.exports = {
   parseOsmPriceTag: parseOsmPriceTag,
   parseOpeningHours: parseOpeningHours,
   isOpenAtParsed: isOpenAtParsed,
-  buildPlaceDeepLinks: buildPlaceDeepLinks
+  buildPlaceDeepLinks: buildPlaceDeepLinks,
+  buildPlaceSearchQuery: buildPlaceSearchQuery
 };
