@@ -148,7 +148,7 @@ function looksLikeSpecificBranchName(name) {
 
 function exactNaverPlaceName(place) {
   var n = String((place && place.naverName) || '').replace(/\s+/g, ' ').trim();
-  if (n && looksLikeSpecificBranchName(n)) return n;
+  if (n) return n;
   var fallback = String((place && place.name) || '').replace(/\s+/g, ' ').trim();
   return fallback || '장소';
 }
@@ -158,16 +158,20 @@ function buildPlaceSearchQuery(place) {
 }
 
 function buildPlaceDeepLinks(place, lang) {
-  var name = exactNaverPlaceName(place);
-  var enc = encodeURIComponent(name);
   var lat = place && place.lat != null ? Number(place.lat) : null;
   var lon = place && place.lon != null ? Number(place.lon) : null;
   var hasCoords = lat != null && lon != null && !isNaN(lat) && !isNaN(lon);
+  var name = exactNaverPlaceName(place);
+  var enc = encodeURIComponent(name);
   if (lang === 'en') {
     var gq = hasCoords
       ? ('https://www.google.com/maps?q=' + lat + ',' + lon)
       : ('https://www.google.com/maps/search/?api=1&query=' + enc);
     return { map: gq, reserve: gq, menu: gq, kakao: 'https://map.kakao.com/?q=' + enc };
+  }
+  if (place && place.naverMapUrl && /map\.naver\.com/i.test(String(place.naverMapUrl))) {
+    var known = String(place.naverMapUrl);
+    return { map: known, reserve: known, menu: known, kakao: 'https://map.kakao.com/?q=' + enc };
   }
   var placeUrl = 'https://map.naver.com/v5/search/' + enc;
   return {

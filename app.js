@@ -225,6 +225,8 @@
       labelHasCar: '자차 보유',
       hasCarHint: '끄면 도보·대중교통만 사용해요',
       btnOptimizeRoute: '동선 최적화',
+      btnRestoreRoute: '복구하기',
+      routeAlreadyOptimal: '이미 최적화가 되어있습니다',
       congestionRelaxed: '💎 숨은명소',
       congestionNormal: '✨ 대중적',
       congestionBusy: '🔥 핫플',
@@ -579,6 +581,8 @@
       labelHasCar: 'I have a car',
       hasCarHint: 'Off = walk/transit only',
       btnOptimizeRoute: 'Optimize route',
+      btnRestoreRoute: 'Restore order',
+      routeAlreadyOptimal: 'Route is already optimized',
       congestionRelaxed: '💎 Hidden gem',
       congestionNormal: '✨ Popular',
       congestionBusy: '🔥 Hot spot',
@@ -919,7 +923,7 @@
     set('transportTransit', t('transportTransit'));
     set('labelHasCar', t('labelHasCar'));
     if ($('hasCarHint')) $('hasCarHint').textContent = t('hasCarHint');
-    set('btnOptimizeRouteText', t('btnOptimizeRoute'));
+    set('btnOptimizeRouteText', routeOrderBeforeOptimize ? t('btnRestoreRoute') : t('btnOptimizeRoute'));
     set('shareTitleHighlight', t('shareTitle'));
     set('shareDesc', t('shareDesc'));
     set('btnCopyShareLinkText', t('btnCopyShareLink'));
@@ -2238,6 +2242,8 @@
   let searchCenter = null;
   let mapAdapter = null;
   var lastRenderedPlan = null;
+  /** 동선 최적화 직전 스냅샷 — 있으면 버튼이 「복구하기」 */
+  var routeOrderBeforeOptimize = null;
   var savedPlans = [];
   var cardShareTimerId = null;
 
@@ -2649,7 +2655,9 @@
       if (!isQuickRegionPick()) return;
       mapAdapter.addPickMarker(lat, lng, t('pickHerePlan'));
       searchCenter = { lat: lat, lng: lng };
-      rememberRegion(lat, lng, t('recentPickedHere'));
+      reverseGeocodePlaceLabel(lat, lng).then(function (placeLabel) {
+        rememberRegion(lat, lng, placeLabel || (lat.toFixed(3) + ', ' + lng.toFixed(3)));
+      });
       fetchFourDayForecast(lat, lng);
     });
 
@@ -3760,6 +3768,45 @@
     }).catch(function () { return ''; });
   }
 
+  /** 지도에서 찍은 좌표 → 최근 지역 칩에 쓸 짧은 위치 이름 */
+  function reverseGeocodePlaceLabel(lat, lng) {
+    var url = 'https://nominatim.openstreetmap.org/reverse?format=json&lat=' +
+      encodeURIComponent(lat) + '&lon=' + encodeURIComponent(lng) +
+      '&zoom=17&addressdetails=1';
+    return fetch(url, {
+      headers: { 'Accept-Language': currentLang === 'en' ? 'en' : 'ko' }
+    }).then(function (res) { return res.json(); }).then(function (data) {
+      if (!data) return '';
+      var a = data.address || {};
+      if (data.name && String(data.name).trim()) {
+        return String(data.name).replace(/\s+/g, ' ').trim();
+      }
+      var label = a.amenity || a.tourism || a.leisure || a.shop || a.building ||
+        a.suburb || a.neighbourhood || a.quarter || a.hamlet ||
+        a.city_district || a.borough || '';
+      if (!label && a.road) {
+        var area = a.suburb || a.neighbourhood || a.quarter || a.village || a.town || '';
+        label = area ? (area + ' ' + a.road) : a.road;
+      }
+      if (!label) {
+        label = a.town || a.city || a.village || a.county || '';
+      }
+      if (!label && data.display_name) {
+        label = String(data.display_name).split(',')[0];
+      }
+      return String(label || '').replace(/\s+/g, ' ').trim();
+    }).catch(function () { return ''; });
+  }
+
+  function isGenericRecentLabel(label) {
+    var s = String(label || '').replace(/\s+/g, '').toLowerCase();
+    if (!s) return true;
+    var generic = String(t('recentPickedHere') || '').replace(/\s+/g, '').toLowerCase();
+    if (s === generic) return true;
+    if (s === '찍은곳' || s === 'pinnedspot' || s === 'pickedspot') return true;
+    return false;
+  }
+
   function areaHintForPlaceSearch(center) {
     var typed = (confirmedSearchQuery || (searchInput && searchInput.value) || '').trim();
     if (typed) {
@@ -4593,8 +4640,8 @@
   }
 
   /**
-   * 네이버 지도에 현존하고, 찍은 위치 반경 안인지 확인.
-   * 성공 시 정식 상호·좌표를 돌려준다.
+   * 네이버 지도에 현존하고, 찍은 위치 반경 안이며, 지점이 확실한지 확인.
+   * 브랜드명만 나와 사용자가 지점을 골라야 하면 탈락.
    */
   async function verifyNaverPlaceNear(place, center, radiusMeters) {
     if (!place || !center) return { ok: false, reason: 'bad_args' };
@@ -4639,13 +4686,16 @@
       if (!coords) continue;
       var dCenter = haversineMeters(centerPt, coords);
       var dPlace = haversineMeters(place, { lat: coords.lat, lon: coords.lon });
-      // 네이버상 위치가 찍은 핀 반경 밖이면 탈락
       if (dCenter > maxM) continue;
-      // OSM 좌표와 네이버 좌표가 너무 다르면(잘못된 매칭) 탈락
-      if (dPlace > 1200) continue;
+      // OSM·네이버 좌표가 충분히 가까워야 함
+      if (dPlace > 800) continue;
       if (naverResultLooksVeryBad({ items: [best] })) continue;
       var title = stripHtmlTags(best.title);
       if (!title) continue;
+      // 사용자가 지점을 또 고르게 되는 애매한 결과는 제외
+      if (!isClearNaverPlaceMatch(title, items, best, place.lat, place.lon)) {
+        continue;
+      }
       return {
         ok: true,
         item: best,
@@ -4656,6 +4706,24 @@
     }
     if (!sawApiOk) return { ok: false, reason: 'api_fail' };
     return { ok: false, reason: 'not_on_naver' };
+  }
+
+  /** 지점명으로 바로 열 수 있는지 (브랜드만 / 근처 동명 다수면 false) */
+  function isClearNaverPlaceMatch(title, items, best, lat, lon) {
+    var t = String(title || '').replace(/\s+/g, ' ').trim();
+    if (!t) return false;
+    if (looksLikeSpecificBranchName(t)) return true;
+
+    // 상호가 구체적이지 않으면: 좌표 근처(500m)에 결과가 딱 1개일 때만 허용
+    var nearCount = 0;
+    for (var i = 0; i < (items || []).length; i++) {
+      var c = naverMapToLatLng(items[i].mapx, items[i].mapy);
+      if (!c) continue;
+      if (haversineMeters({ lat: lat, lon: lon }, { lat: c.lat, lon: c.lon }) <= 500) {
+        nearCount++;
+      }
+    }
+    return nearCount === 1;
   }
 
   function applyVerifiedNaverPlace(place, verified) {
@@ -4811,10 +4879,10 @@
         applyVerifiedNaverPlace(item, verified);
         item._needsReplace = false;
       } else if (verified.reason === 'api_fail') {
-        // API 장애 시에만 반경 안이면 유지
-        item._needsReplace = false;
+        // API 장애 때는 이미 확정된 네이버 정식명만 유지
+        item._needsReplace = !(item.naverName && looksLikeSpecificBranchName(item.naverName));
       } else {
-        // 네이버에 없거나 반경 밖 → 교체
+        // 네이버에 없거나 지점이 애매함 → 교체
         item._needsReplace = true;
       }
     }
@@ -4845,10 +4913,7 @@
           replaced = applyVerifiedNaverPlace(Object.assign({}, cand), vr);
           break;
         }
-        if (vr.reason === 'api_fail') {
-          replaced = cand;
-          break;
-        }
+        // api_fail·애매·미존재는 다음 후보
       }
       if (replaced) {
         used.delete(out[j].name);
@@ -6353,6 +6418,7 @@
         });
 
         if (planCancelRequested || myToken !== planGenerateToken) return;
+        clearRouteOptimizeSnapshot();
         renderPlan(plan, center, radiusMeters, startTime.value, endTime.value, timeNotice, estimatedCostWon, budget, pools, mbtiPJ, mbtiIE, {
           whyItems: whyItems,
           travelTotal: travelTotal
@@ -6405,8 +6471,21 @@
       travelFromPrevMin: item.travelFromPrevMin,
       pinned: !!item.pinned,
       highlight: !!item.highlight,
-      requestedSlot: item.requestedSlot || null
+      requestedSlot: item.requestedSlot || null,
+      naverName: item.naverName || '',
+      naverMapUrl: item.naverMapUrl || ''
     };
+  }
+
+  function updateOptimizeRouteButtonLabel() {
+    var el = $('btnOptimizeRouteText');
+    if (!el) return;
+    el.textContent = routeOrderBeforeOptimize ? t('btnRestoreRoute') : t('btnOptimizeRoute');
+  }
+
+  function clearRouteOptimizeSnapshot() {
+    routeOrderBeforeOptimize = null;
+    updateOptimizeRouteButtonLabel();
   }
 
   function rememberRegion(lat, lng, label) {
@@ -6459,6 +6538,15 @@
         persistGuestDraft();
         openDetailedSettings();
         askGenerateAtRegion(searchCenter, r.label || t('recentPickedHere'));
+      });
+    });
+    // 예전에 "찍은 곳"으로 저장된 항목은 위치 이름으로 갱신
+    list.forEach(function (r) {
+      if (!r || r.lat == null || r.lng == null) return;
+      if (!isGenericRecentLabel(r.label)) return;
+      reverseGeocodePlaceLabel(r.lat, r.lng).then(function (placeLabel) {
+        if (!placeLabel || isGenericRecentLabel(placeLabel)) return;
+        rememberRegion(r.lat, r.lng, placeLabel);
       });
     });
   }
@@ -6889,21 +6977,10 @@
   }
 
   function exactNaverPlaceName(place) {
+    // 일정에 넣은 곳은 검증된 네이버 정식명만 씀 (브랜드+동으로 목록 뜨게 하지 않음)
     var n = String((place && place.naverName) || '').replace(/\s+/g, ' ').trim();
-    if (n && looksLikeSpecificBranchName(n)) return n;
+    if (n) return n;
     var name = String((place && place.name) || '').replace(/\s+/g, ' ').trim();
-    if (name && looksLikeSpecificBranchName(name)) return name;
-    // 예전에 잘 되던 방식: 이름 + 짧은 지역(동/구). 브랜드만 검색하지 않음
-    var shortAddr = shortenAddrForSearch(place && place.addr);
-    if (name && shortAddr) {
-      var extras = shortAddr.split(/\s+/).filter(function (tok) {
-        return tok.length >= 2 && name.indexOf(tok) === -1;
-      });
-      if (extras.length) return (name + ' ' + extras.slice(0, 2).join(' ')).trim();
-    }
-    var region = '';
-    try { region = regionHintForNaverLookup() || ''; } catch (e) { region = ''; }
-    if (name && region && name.indexOf(region) === -1) return (name + ' ' + region).trim();
     return name || '장소';
   }
 
@@ -6912,18 +6989,23 @@
   }
 
   function buildPlaceDeepLinks(place) {
-    var name = exactNaverPlaceName(place);
-    var enc = encodeURIComponent(name);
     var lat = place && place.lat != null ? Number(place.lat) : null;
     var lon = place && place.lon != null ? Number(place.lon) : null;
     var hasCoords = lat != null && lon != null && !isNaN(lat) && !isNaN(lon);
     if (currentLang === 'en') {
+      var encEn = encodeURIComponent(exactNaverPlaceName(place));
       var gq = hasCoords
         ? ('https://www.google.com/maps?q=' + lat + ',' + lon)
-        : ('https://www.google.com/maps/search/?api=1&query=' + enc);
+        : ('https://www.google.com/maps/search/?api=1&query=' + encEn);
       return { map: gq, reserve: gq, menu: gq };
     }
-    var placeUrl = 'https://map.naver.com/v5/search/' + enc;
+    // 검증된 네이버 URL/정식명만 사용 (인앱 지도 UI는 변경 없음)
+    if (place && place.naverMapUrl && /map\.naver\.com/i.test(String(place.naverMapUrl))) {
+      var known = String(place.naverMapUrl);
+      return { map: known, reserve: known, menu: known };
+    }
+    var name = exactNaverPlaceName(place);
+    var placeUrl = 'https://map.naver.com/v5/search/' + encodeURIComponent(name);
     return {
       map: placeUrl,
       reserve: placeUrl,
@@ -7252,8 +7334,63 @@
     }).catch(function () { return plan; });
   }
 
+  function planOrderKey(plan) {
+    return (plan || []).map(function (p) {
+      return String(p && p.name || '') + '@' +
+        (p && p.lat != null ? Number(p.lat).toFixed(5) : '') + ',' +
+        (p && p.lon != null ? Number(p.lon).toFixed(5) : '');
+    }).join('|');
+  }
+
+  function samePlanOrder(a, b) {
+    return planOrderKey(a) === planOrderKey(b);
+  }
+
   function runOptimizeRoute() {
     if (!lastRenderedPlan || !lastRenderedPlan.plan || lastRenderedPlan.plan.length < 2) return;
+
+    // 복구하기: 최적화 직전 순서로 되돌림
+    if (routeOrderBeforeOptimize && routeOrderBeforeOptimize.plan) {
+      var snap = routeOrderBeforeOptimize;
+      clearRouteOptimizeSnapshot();
+      var restored = snap.plan.map(function (p) {
+        var copy = snapshotPlace(p) || {};
+        return copy;
+      });
+      lastRenderedPlan.plan = restored;
+      lastRenderedPlan.timeNotice = snap.timeNotice || '';
+      lastRenderedPlan.travelTotal = snap.travelTotal != null ? snap.travelTotal : totalTravelMinutes(restored);
+      renderPlan(
+        restored,
+        lastRenderedPlan.center,
+        lastRenderedPlan.radiusMeters,
+        lastRenderedPlan.start,
+        lastRenderedPlan.end,
+        lastRenderedPlan.timeNotice,
+        lastRenderedPlan.estimatedCostWon != null ? lastRenderedPlan.estimatedCostWon : null,
+        lastRenderedPlan.budgetWon != null ? lastRenderedPlan.budgetWon : null,
+        lastRenderedPlan.pools || undefined,
+        lastRenderedPlan.mbtiPJ || '',
+        lastRenderedPlan.mbtiIE || '',
+        {
+          whyItems: snap.whyItems || lastRenderedPlan.whyItems || null,
+          travelTotal: lastRenderedPlan.travelTotal
+        }
+      );
+      syncCurrentSavedPlan();
+      return;
+    }
+
+    // 동선 최적화: 현재 순서를 저장한 뒤 최단 동선으로 재배열
+    var beforePlan = lastRenderedPlan.plan.map(function (p) { return snapshotPlace(p); });
+    routeOrderBeforeOptimize = {
+      plan: beforePlan,
+      timeNotice: lastRenderedPlan.timeNotice || '',
+      travelTotal: lastRenderedPlan.travelTotal,
+      whyItems: lastRenderedPlan.whyItems || null
+    };
+    updateOptimizeRouteButtonLabel();
+
     showLoadingOverlay();
     setLoadingProgress(30, 'loadingTextFinish', 'loadingSubFinish');
     startLoadingProgressDrift(30, 90, 2500);
@@ -7264,6 +7401,12 @@
     }).then(function (result) {
       hideLoadingOverlay();
       var ordered = result.plan;
+      // 순서가 그대로면 이미 최적
+      if (samePlanOrder(beforePlan, ordered)) {
+        clearRouteOptimizeSnapshot();
+        showToast(t('routeAlreadyOptimal'), 'info');
+        return;
+      }
       var notice = lastRenderedPlan.timeNotice || '';
       if (result.overrun) {
         notice = (notice ? notice + ' ' : '') + t('travelOverrunNotice');
@@ -7275,8 +7418,11 @@
         whyItems: lastRenderedPlan.whyItems || null,
         travelTotal: lastRenderedPlan.travelTotal
       });
+      syncCurrentSavedPlan();
+      updateOptimizeRouteButtonLabel();
     }).catch(function () {
       hideLoadingOverlay();
+      clearRouteOptimizeSnapshot();
     });
   }
 
@@ -7284,6 +7430,7 @@
     resultSection.hidden = true;
     updateMobileDockForResult(false);
     hidePlanRecovery();
+    clearRouteOptimizeSnapshot();
     if (mapAdapter && mapAdapter.clearPlaceMarkers) mapAdapter.clearPlaceMarkers();
   }
 
