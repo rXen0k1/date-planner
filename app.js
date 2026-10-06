@@ -3839,8 +3839,8 @@
           { lat: lat, lon: lng },
           { lat: el.lat, lon: el.lon }
         );
-        // 선택한 위치 반경 안만 (최소 2.5km 강제 허용 금지)
-        if (dist > (radiusMeters || 1500) * 1.2) continue;
+        // 선택한 위치 반경 안만
+        if (dist > (radiusMeters || 1500) * 1.05) continue;
         seen[key] = true;
         collected.push(el);
       }
@@ -4286,9 +4286,12 @@
       '&sort=' +
       (sort === 'comment' ? 'comment' : 'random');
     return fetch(url)
-      .then(function (res) { return res.json(); })
+      .then(function (res) {
+        if (!res.ok) throw new Error('naver_search_http_' + res.status);
+        return res.json();
+      })
       .then(function (data) {
-        if (data.errorCode) {
+        if (!data || data.errorCode || data.error) {
           naverSearchCache[cacheKey] = null;
           return null;
         }
@@ -4578,18 +4581,137 @@
 
   function filterPlacesByRadius(places, center, radiusMeters) {
     if (!places || !places.length || !center) return places || [];
-    var maxM = (radiusMeters || 1500) * 1.15;
+    var maxM = (radiusMeters || 1500) * 1.05;
+    var c = {
+      lat: center.lat,
+      lon: center.lon != null ? center.lon : center.lng
+    };
     return places.filter(function (p) {
       if (!p || p.lat == null || p.lon == null) return false;
-      return haversineMeters(center, p) <= maxM;
+      return haversineMeters(c, p) <= maxM;
     });
+  }
+
+  /**
+   * 네이버 지도에 현존하고, 찍은 위치 반경 안인지 확인.
+   * 성공 시 정식 상호·좌표를 돌려준다.
+   */
+  async function verifyNaverPlaceNear(place, center, radiusMeters) {
+    if (!place || !center) return { ok: false, reason: 'bad_args' };
+    var maxM = (radiusMeters || 1500) * 1.05;
+    var centerPt = {
+      lat: Number(center.lat),
+      lon: Number(center.lng != null ? center.lng : center.lon)
+    };
+    if (!isFinite(centerPt.lat) || !isFinite(centerPt.lon)) {
+      return { ok: false, reason: 'bad_center' };
+    }
+    if (place.lat == null || place.lon == null) {
+      return { ok: false, reason: 'no_coords' };
+    }
+    if (haversineMeters(centerPt, place) > maxM) {
+      return { ok: false, reason: 'far_from_pin' };
+    }
+
+    var name = String(place.name || '').replace(/\s+/g, ' ').trim();
+    if (!name || isBadPlaceName(name)) return { ok: false, reason: 'bad_name' };
+
+    var shortAddr = shortenAddrForSearch(place.addr);
+    var region = areaHintForPlaceSearch({
+      lat: centerPt.lat,
+      lng: centerPt.lon
+    }) || '';
+    var queries = [];
+    if (shortAddr) queries.push((name + ' ' + shortAddr.split(/\s+/)[0]).trim());
+    if (region && name.indexOf(region) === -1) queries.push((name + ' ' + region).trim());
+    queries.push(name);
+
+    var sawApiOk = false;
+    for (var i = 0; i < queries.length; i++) {
+      var data = await fetchNaverLocalSearch(queries[i], 'random');
+      if (data == null) continue;
+      sawApiOk = true;
+      var items = data.items || [];
+      if (!items.length) continue;
+      var best = pickClosestNaverItem(items, place.lat, place.lon);
+      if (!best) continue;
+      var coords = naverMapToLatLng(best.mapx, best.mapy);
+      if (!coords) continue;
+      var dCenter = haversineMeters(centerPt, coords);
+      var dPlace = haversineMeters(place, { lat: coords.lat, lon: coords.lon });
+      // 네이버상 위치가 찍은 핀 반경 밖이면 탈락
+      if (dCenter > maxM) continue;
+      // OSM 좌표와 네이버 좌표가 너무 다르면(잘못된 매칭) 탈락
+      if (dPlace > 1200) continue;
+      if (naverResultLooksVeryBad({ items: [best] })) continue;
+      var title = stripHtmlTags(best.title);
+      if (!title) continue;
+      return {
+        ok: true,
+        item: best,
+        title: title,
+        lat: coords.lat,
+        lon: coords.lon
+      };
+    }
+    if (!sawApiOk) return { ok: false, reason: 'api_fail' };
+    return { ok: false, reason: 'not_on_naver' };
+  }
+
+  function applyVerifiedNaverPlace(place, verified) {
+    if (!place || !verified || !verified.ok) return place;
+    if (verified.title) {
+      place.name = verified.title;
+      place.naverName = verified.title;
+    }
+    if (verified.lat != null && verified.lon != null) {
+      place.lat = verified.lat;
+      place.lon = verified.lon;
+    }
+    if (verified.item) {
+      var url = naverItemToMapUrl(verified.item);
+      place.naverMapUrl = url;
+      if (!place.tags) place.tags = {};
+      place.tags.naver_link = url;
+      place.tags.naver_name = verified.title;
+      var road = verified.item.roadAddress || verified.item.address;
+      if (road) place.addr = road;
+    }
+    return place;
   }
 
   function enrichPlanWithNaverCongestion(plan, center, radiusMeters) {
     if (!plan || plan.length === 0 || !isNaverSearchConfigured()) return Promise.resolve(plan);
-    var queries = plan.map(function (p) { return (p.name || '').trim() || null; });
-    return Promise.all(queries.map(function (q) { return fetchNaverLocalSearch(q || '', 'comment'); }))
-      .then(function (results) {
+    var region = '';
+    if (center) {
+      region = areaHintForPlaceSearch({
+        lat: center.lat,
+        lng: center.lng != null ? center.lng : center.lon
+      }) || '';
+    }
+    // 브랜드명만 검색하면 명동·시청만 나와서, 동네/역 힌트를 붙여 지점을 찾는다
+    var queryList = plan.map(function (p) {
+      var name = String((p && p.name) || '').replace(/\s+/g, ' ').trim();
+      if (!name) return [];
+      var shortAddr = shortenAddrForSearch(p && p.addr);
+      var qs = [];
+      if (shortAddr) qs.push((name + ' ' + shortAddr.split(/\s+/)[0]).trim());
+      if (region && name.indexOf(region) === -1) qs.push((name + ' ' + region).trim());
+      qs.push(name);
+      return qs;
+    });
+
+    return Promise.all(queryList.map(function (qs) {
+      if (!qs.length) return Promise.resolve(null);
+      function tryAt(i) {
+        if (i >= qs.length) return Promise.resolve(null);
+        return fetchNaverLocalSearch(qs[i], 'random').then(function (data) {
+          if (data && data.items && data.items.length) return data;
+          return tryAt(i + 1);
+        });
+      }
+      return tryAt(0);
+    })).then(function (results) {
         var totals = results.map(function (r) { return r && r.total != null ? r.total : 0; });
         var adjustedScores = plan.map(function (p, i) {
           var div = getCategoryScoreDivisor(p.typeKey);
@@ -4613,19 +4735,12 @@
           plan[j].highlight = false;
           var items = results[j] && results[j].items;
           if (items && Array.isArray(items) && items.length) {
-            // 일정 좌표에 가장 가까운 네이버 업체 → "도미노피자 역삼점"처럼 지점명 확정
+            // 일정 좌표에 가장 가까운 네이버 업체 → "메가MGC커피 역삼테헤란로점"
             var best = pickClosestNaverItem(items, plan[j].lat, plan[j].lon);
             if (best) {
               var title = stripHtmlTags(best.title);
               var bestCoords = naverMapToLatLng(best.mapx, best.mapy);
-              if (title && looksLikeSpecificBranchName(title)) {
-                applyNaverExactName(plan[j], best, j);
-              } else if (title && bestCoords) {
-                // 지점 접미사 없어도 좌표가 맞으면 정식명 사용
-                var dPlace = haversineMeters(plan[j], { lat: bestCoords.lat, lon: bestCoords.lon });
-                if (dPlace <= 900) applyNaverExactName(plan[j], best, j);
-              }
-              // 네이버상 실제 위치가 선택 반경 밖이면 일정에서 빼도록 표시
+              if (title) applyNaverExactName(plan[j], best, j);
               if (center && bestCoords) {
                 var dCenter = haversineMeters(
                   { lat: center.lat, lon: center.lng != null ? center.lng : center.lon },
@@ -4642,7 +4757,6 @@
               if (found) { plan[j].highlight = true; break; }
             }
           }
-          // OSM 좌표 자체가 반경 밖이면 제외
           if (center && plan[j].lat != null) {
             var dOsm = haversineMeters(
               { lat: center.lat, lon: center.lng != null ? center.lng : center.lon },
@@ -4667,55 +4781,71 @@
     return (preferred.length ? preferred : sorted).slice(0, 10);
   }
 
-  async function ensurePlanPlaceQuality(plan, pools, allPlaces, tier, effectiveCongestion) {
+  async function ensurePlanPlaceQuality(plan, pools, allPlaces, tier, effectiveCongestion, center, radiusMeters) {
     if (!plan || !plan.length) return plan;
     var used = new Set(plan.map(function (p) { return p.name; }));
     var typeToPoolIndex = { restaurant: 0, cafe: 1, activity: 2, park: 3 };
     var out = plan.slice();
+    var maxM = (radiusMeters || 1500) * 1.05;
+    var centerPt = center ? {
+      lat: center.lat,
+      lon: center.lng != null ? center.lng : center.lon
+    } : null;
 
     for (var i = 0; i < out.length; i++) {
       var item = out[i];
       if (!item || isBadPlaceName(item.name) || isOsmPlaceClosed(item.tags) || isOsmLowRated(item.tags)) {
         item._needsReplace = true;
-      } else if (item.typeKey === 'park') {
+        continue;
+      }
+      if (centerPt && haversineMeters(centerPt, item) > maxM) {
+        item._needsReplace = true;
+        continue;
+      }
+      if (!isNaverSearchConfigured()) {
         item._needsReplace = false;
-      } else if (isNaverSearchConfigured()) {
-        var naver = await fetchNaverLocalSearch(item.name, 'comment');
-        // API 실패(null)면 제외하지 않음. 성공했는데 매칭 없거나 리뷰가 매우 나쁘면 교체
-        if (naver != null && (!naverResultMatchesPlace(naver, item.name) || naverResultLooksVeryBad(naver))) {
-          item._needsReplace = true;
-        }
+        continue;
+      }
+      var verified = await verifyNaverPlaceNear(item, center || centerPt, radiusMeters);
+      if (verified.ok) {
+        applyVerifiedNaverPlace(item, verified);
+        item._needsReplace = false;
+      } else if (verified.reason === 'api_fail') {
+        // API 장애 시에만 반경 안이면 유지
+        item._needsReplace = false;
+      } else {
+        // 네이버에 없거나 반경 밖 → 교체
+        item._needsReplace = true;
       }
     }
 
     for (var j = 0; j < out.length; j++) {
       if (!out[j] || !out[j]._needsReplace) {
-        if (out[j]) {
-          delete out[j]._needsReplace;
-        }
+        if (out[j]) delete out[j]._needsReplace;
         continue;
       }
       var slotType = getPoolIndexAndSlotType(out[j].typeKey || 'restaurant').slotTypeKey;
       var poolIdx = typeToPoolIndex[slotType] != null ? typeToPoolIndex[slotType] : 0;
       var candidates = pickQualityReplacement(pools[poolIdx], allPlaces, slotType, used, tier, effectiveCongestion);
+      // 반경 안 후보만
+      if (centerPt) {
+        candidates = candidates.filter(function (p) {
+          return p && haversineMeters(centerPt, p) <= maxM;
+        });
+      }
       var replaced = null;
       for (var c = 0; c < candidates.length; c++) {
         var cand = candidates[c];
-        if (cand.typeKey === 'park') {
-          replaced = cand;
-          break;
-        }
         if (!isNaverSearchConfigured()) {
           replaced = cand;
           break;
         }
-        var nr = await fetchNaverLocalSearch(cand.name, 'comment');
-        if (nr == null) {
-          // 검색 API 오류면 일단 후보 허용
-          replaced = cand;
+        var vr = await verifyNaverPlaceNear(cand, center || centerPt, radiusMeters);
+        if (vr.ok) {
+          replaced = applyVerifiedNaverPlace(Object.assign({}, cand), vr);
           break;
         }
-        if (naverResultMatchesPlace(nr, cand.name) && !naverResultLooksVeryBad(nr)) {
+        if (vr.reason === 'api_fail') {
           replaced = cand;
           break;
         }
@@ -4731,12 +4861,14 @@
           lon: replaced.lon,
           addr: replaced.addr,
           tags: replaced.tags,
+          naverName: replaced.naverName || '',
+          naverMapUrl: replaced.naverMapUrl || '',
           timeStart: out[j].timeStart,
           timeEnd: out[j].timeEnd,
           congestion: getCongestion(replaced),
+          requestedSlot: out[j].requestedSlot
         };
       } else {
-        // 대체할 곳이 없으면 일정에서 제거 (나쁜 장소는 절대 유지하지 않음)
         used.delete(out[j].name);
         out[j] = null;
       }
@@ -5095,11 +5227,13 @@
       if (ctx.usedSlots[slot] >= 1) score -= 10;
     }
 
-    // 시작점 기준으로 너무 바깥쪽만 몰리지 않게
+    // 시작점 기준으로 반경 밖은 후보에서 제외
     if (ctx.center) {
       var fromCenter = haversineMeters(ctx.center, { lat: place.lat, lon: place.lon });
+      var maxR = (ctx.radiusMeters || 1500) * 1.05;
+      if (fromCenter > maxR) return -1e9;
       if (fromCenter < (ctx.radiusMeters || 1500) * 0.85) score += 4;
-      else if (fromCenter > (ctx.radiusMeters || 1500) * 1.05) score -= 8;
+      else if (fromCenter > (ctx.radiusMeters || 1500) * 0.95) score -= 8;
     }
 
     return score;
@@ -5955,8 +6089,11 @@
             transportProfile: transportProfile
           };
           function filterAvailable(list, useCongestion, requireHours) {
+            var maxNear = (radiusMeters || 1500) * 1.05;
+            var pin = { lat: center.lat, lon: center.lng != null ? center.lng : center.lon };
             return list.filter(function (p) {
               if (used.has(p.name) || isWeakPlaceCandidate(p)) return false;
+              if (haversineMeters(pin, p) > maxNear) return false;
               if (requireHours !== false && !isOpenDuringSlot(p.tags, tMin, slotEnd)) return false;
               if (useCongestion && !congestionMatchesPreference(getCongestion(p).level, effectiveCongestion)) return false;
               return true;
@@ -6086,7 +6223,7 @@
         if (isNaverSearchConfigured()) {
           setLoadingProgress(78, 'loadingTextQuality', 'loadingSubQuality');
           startLoadingProgressDrift(78, 92, 3500);
-          plan = await ensurePlanPlaceQuality(plan, pools, allPlaces, tier, effectiveCongestion);
+          plan = await ensurePlanPlaceQuality(plan, pools, allPlaces, tier, effectiveCongestion, center, radiusMeters);
           if (!plan.length) {
             var emergency2 = buildEmergencyFallbackPlan({
               allPlaces: allPlaces,
@@ -6123,7 +6260,7 @@
               var farPool = (farPoolIdx != null && pools[farPoolIdx]) ? pools[farPoolIdx] : allPlaces;
               var farAlts = (farPool || []).filter(function (p) {
                 return p && !farUsed.has(p.name) && !isWeakPlaceCandidate(p) &&
-                  haversineMeters({ lat: center.lat, lon: center.lng != null ? center.lng : center.lon }, p) <= radiusMeters * 1.15;
+                  haversineMeters({ lat: center.lat, lon: center.lng != null ? center.lng : center.lon }, p) <= radiusMeters * 1.05;
               });
               if (farAlts.length) {
                 var farPick = farAlts[0];
@@ -6754,8 +6891,20 @@
   function exactNaverPlaceName(place) {
     var n = String((place && place.naverName) || '').replace(/\s+/g, ' ').trim();
     if (n && looksLikeSpecificBranchName(n)) return n;
-    var fallback = String((place && place.name) || '').replace(/\s+/g, ' ').trim();
-    return fallback || '장소';
+    var name = String((place && place.name) || '').replace(/\s+/g, ' ').trim();
+    if (name && looksLikeSpecificBranchName(name)) return name;
+    // 예전에 잘 되던 방식: 이름 + 짧은 지역(동/구). 브랜드만 검색하지 않음
+    var shortAddr = shortenAddrForSearch(place && place.addr);
+    if (name && shortAddr) {
+      var extras = shortAddr.split(/\s+/).filter(function (tok) {
+        return tok.length >= 2 && name.indexOf(tok) === -1;
+      });
+      if (extras.length) return (name + ' ' + extras.slice(0, 2).join(' ')).trim();
+    }
+    var region = '';
+    try { region = regionHintForNaverLookup() || ''; } catch (e) { region = ''; }
+    if (name && region && name.indexOf(region) === -1) return (name + ' ' + region).trim();
+    return name || '장소';
   }
 
   function buildPlaceSearchQuery(place) {
@@ -6833,8 +6982,8 @@
     var title = stripHtmlTags(item.title);
     if (!title) return '';
     place.naverName = title;
-    // 브랜드명만 있던 일정 표기도 지점명으로 맞춤
-    if (!looksLikeSpecificBranchName(place.name) && looksLikeSpecificBranchName(title)) {
+    // 일정 표시·지도 검색 모두 네이버 정식 상호(지점명)로 통일
+    if (title !== place.name) {
       place.name = title;
       if (itinerary && idx != null && !isNaN(idx)) {
         var nameEl = itinerary.querySelectorAll('li')[idx];
